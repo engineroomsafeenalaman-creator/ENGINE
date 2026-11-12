@@ -5,11 +5,10 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from concurrent.futures import ThreadPoolExecutor
 import requests
 
-# Cấu hình biến môi trường (Cài đặt trong tab Environment của Render)
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
-TIMEFRAME = "5m"          # Khung thời gian 5 phút
-MIN_OI_CHANGE = 0.001     # Ngưỡng biến động tối thiểu (%)
-SCAN_INTERVAL = 300       # Chu kỳ quét: 300 giây = 5 phút
+TIMEFRAME = "5m"
+MIN_OI_CHANGE = 0.001
+SCAN_INTERVAL = 300
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -23,12 +22,11 @@ FAPI_ENDPOINTS = [
     "https://binance.com"
 ]
 
-# --- Web Server phụ để giữ cho Render luôn hoạt động ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Binance Alpha OI Bot is running!")
+        self.wfile.write(b"OK")
     def log_message(self, format, *args):
         pass
 
@@ -37,25 +35,27 @@ def start_dummy_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-# --- Logic quét dữ liệu Binance Alpha & OI ---
 def send_discord_raw(payload):
     if not DISCORD_WEBHOOK_URL:
-        print("[Lỗi] Chưa cài đặt biến DISCORD_WEBHOOK_URL trên Render!")
+        print("[Loi] Chua co DISCORD_WEBHOOK_URL")
         return
     try:
         res = requests.post(DISCORD_WEBHOOK_URL.strip(), json=payload, timeout=15)
-        print(f"[Discord] Mã phản hồi: {res.status_code}")
+        print(f"[Discord] Status: {res.status_code}")
     except Exception as e:
-        print(f"[Discord] Lỗi gửi tin: {e}")
+        print(f"[Discord] Error: {e}")
 
 def get_working_fapi_base():
     for base_url in FAPI_ENDPOINTS:
         try:
             res = requests.get(f"{base_url}/fapi/v1/exchangeInfo", headers=HEADERS, timeout=8)
             if res.status_code == 200:
+                print(f"[OK] Ket noi thanh cong: {base_url}")
                 return base_url, res.json()
-        except Exception:
-            continue
+            else:
+                print(f"[Chan IP] {base_url} -> {res.status_code}")
+        except Exception as e:
+            print(f"[Loi mang] {base_url}: {e}")
     return None, None
 
 def get_binance_alpha_tokens():
@@ -66,7 +66,7 @@ def get_binance_alpha_tokens():
             tokens = res.json().get("data", [])
             return {t.get("symbol", "").strip().upper() for t in tokens if t.get("symbol")}
     except Exception as e:
-        print(f"[Lỗi Alpha API] {e}")
+        print(f"[Loi Alpha API] {e}")
     return set()
 
 def check_oi_change(args):
@@ -93,15 +93,17 @@ def check_oi_change(args):
     return None
 
 def run_scan_cycle():
-    print("\n--- Bắt đầu quét Binance Alpha OI (5m) ---")
+    print("--- Bat dau quet Binance Alpha OI (5m) ---")
     fapi_base, exchange_data = get_working_fapi_base()
     if not fapi_base or not exchange_data:
-        print("[Cảnh báo] Không kết nối được tới Binance Futures API.")
+        msg = "⚠️ **Render bị Binance chặn IP (Lỗi 451):** Cần chuyển Region của Render sang **Singapore**."
+        print(msg)
+        send_discord_raw({"content": msg})
         return
 
     alpha_tokens = get_binance_alpha_tokens()
     if not alpha_tokens:
-        print("[Cảnh báo] Không lấy được danh sách Binance Alpha.")
+        print("[Loi] Khong lay duoc danh sach Alpha")
         return
 
     futures_map = {}
@@ -113,7 +115,7 @@ def run_scan_cycle():
             futures_map[clean_base] = symbol
 
     target_symbols = [(futures_map[t], fapi_base) for t in alpha_tokens if t in futures_map]
-    print(f"Đang quét {len(target_symbols)} cặp Alpha Futures...")
+    print(f"Dang quet {len(target_symbols)} cap Alpha Futures...")
 
     results = []
     with ThreadPoolExecutor(max_workers=10) as executor:
@@ -125,7 +127,7 @@ def run_scan_cycle():
     top_3 = results[:3]
 
     if not top_3:
-        print("Không có đồng Alpha nào biến động OI > 0.001%.")
+        print("Khong co dong Alpha nao bien dong OI > 0.001%.")
         return
 
     fields = []
@@ -154,13 +156,10 @@ def run_scan_cycle():
     send_discord_raw(payload)
 
 if __name__ == "__main__":
-    # Chạy web server nền để giữ Render sống
     threading.Thread(target=start_dummy_server, daemon=True).start()
-    
-    # Chạy vòng lặp quét mỗi 5 phút
     while True:
         try:
             run_scan_cycle()
         except Exception as e:
-            print(f"[Lỗi hệ thống] {e}")
+            print(f"[Loi he thong] {e}")
         time.sleep(SCAN_INTERVAL)
