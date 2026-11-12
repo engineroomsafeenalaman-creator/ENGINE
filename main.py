@@ -2,9 +2,12 @@
 import os
 import time
 import logging
+import threading
 import requests
-from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
+
+from flask import Flask, jsonify
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 
 # =====================================================
 # CONFIGURATION
@@ -20,42 +23,75 @@ ALPHA_URL = (
 FUTURES_URL = "https://fapi.binance.com"
 
 WAIT_SECONDS = 60
-
-# 0.1%: ngưỡng lọc biến động OI
-# Có thể giảm xuống 0.001 nếu muốn nhạy hơn.
-MIN_OI_CHANGE = 0.1
-
+MIN_OI_CHANGE = 0.001
+COIN_COOLDOWN = 300
 TOP_N = 3
 
-# Không gửi thông báo quá thường xuyên
-DISCORD_COOLDOWN = 300
-
-MAX_WORKERS = 8
+MAX_WORKERS = 10
 MAX_RETRIES = 3
+
+MIN_SUCCESS_RATIO = 0.80
+REFRESH_TARGETS_SECONDS = 1800
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Accept": "application/json"
 }
 
+
+# =====================================================
+# LOGGING
+# =====================================================
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-log = logging.getLogger("AlphaRadar")
+log = logging.getLogger("ALPHA_RADAR")
+
+
+# =====================================================
+# HTTP SESSION
+# =====================================================
 
 http = requests.Session()
 http.headers.update(HEADERS)
 
-# Trạng thái chống spam trong thời gian process chạy
-last_discord_sent = 0
-last_fingerprint = None
-discord_lock = Lock()
+
+# =====================================================
+# RENDER HEALTH CHECK
+# =====================================================
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    return jsonify({
+        "status": "online",
+        "bot": "Binance Alpha OI Radar"
+    })
+
+
+@app.route("/health")
+def health():
+    return jsonify({"status": "healthy"})
+
+
+def start_health_server():
+    port = int(os.getenv("PORT", "10000"))
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        threaded=True,
+        use_reloader=False
+    )
 
 
 # =====================================================
-# HTTP REQUEST WITH RETRY
+# API REQUEST WITH RETRY
 # =====================================================
 
 def get_json(url, params=None, timeout=12):
@@ -63,24 +99,27 @@ def get_json(url, params=None, timeout=12):
     for attempt in range(MAX_RETRIES):
 
         try:
-            response = http.get(
+            response = requests.get(
                 url,
                 params=params,
+                headers=HEADERS,
                 timeout=timeout
             )
 
             if response.status_code in (418, 429):
-                retry_after = response.headers.get(
+
+                retry = response.headers.get(
                     "Retry-After", "5"
                 )
 
                 try:
-                    delay = min(float(retry_after), 60)
+                    delay = min(float(retry), 60)
                 except ValueError:
                     delay = 5
 
                 log.warning(
-                    "Binance rate limit. Chờ %.1f giây",
+                    "Rate limit %s. Waiting %.1fs",
+                    response.status_code,
                     delay
                 )
 
@@ -94,7 +133,7 @@ def get_json(url, params=None, timeout=12):
         except (requests.RequestException, ValueError) as e:
 
             log.warning(
-                "API lỗi lần %s/%s: %s",
+                "API retry %s/%s: %s",
                 attempt + 1,
                 MAX_RETRIES,
                 e
@@ -110,69 +149,54 @@ def get_json(url, params=None, timeout=12):
 # GET BINANCE ALPHA TOKENS
 # =====================================================
 
-def extract_alpha_symbols(data):
+def get_binance_alpha_tokens():
+
+    data = get_json(ALPHA_URL, timeout=20)
+
+    if not isinstance(data, dict):
+        log.error("Alpha API unavailable")
+        return None
+
+    if data.get("success") is False:
+        log.error("Alpha API error: %s", data)
+        return None
+
+    token_data = data.get("data")
+
+    if isinstance(token_data, dict):
+        token_data = (
+            token_data.get("tokens")
+            or token_data.get("list")
+            or token_data.get("data")
+        )
+
+    if not isinstance(token_data, list):
+        log.error("Invalid Alpha token list structure")
+        return None
 
     symbols = set()
 
-    def scan(obj):
+    for token in token_data:
 
-        if isinstance(obj, dict):
+        if not isinstance(token, dict):
+            continue
 
-            for key, value in obj.items():
+        symbol = token.get("symbol")
 
-                if key.lower() in (
-                    "symbol",
-                    "tokensymbol",
-                    "ticker"
-                ):
+        if isinstance(symbol, str) and symbol.strip():
+            symbols.add(symbol.strip().upper())
 
-                    if isinstance(value, str):
-                        value = value.upper().strip()
+    if not symbols:
+        log.error("No Alpha symbols found")
+        return None
 
-                        if value:
-                            symbols.add(value)
-
-                if isinstance(value, (dict, list)):
-                    scan(value)
-
-        elif isinstance(obj, list):
-
-            for item in obj:
-                scan(item)
-
-    scan(data)
+    log.info("Alpha tokens: %s", len(symbols))
 
     return symbols
 
 
-def get_binance_alpha_tokens():
-
-    data = get_json(ALPHA_URL)
-
-    if not isinstance(data, dict):
-        log.error("Không lấy được Binance Alpha Token List")
-        return set()
-
-    if data.get("success") is False:
-        log.error("Binance Alpha API báo lỗi: %s", data)
-        return set()
-
-    tokens = extract_alpha_symbols(data.get("data", data))
-
-    if not tokens:
-        log.error(
-            "Alpha Token List không có symbol hợp lệ. "
-            "Kiểm tra cấu trúc JSON API."
-        )
-        return set()
-
-    log.info("Đã lấy %s Alpha tokens", len(tokens))
-
-    return tokens
-
-
 # =====================================================
-# GET FUTURES SYMBOLS
+# GET ACTIVE FUTURES
 # =====================================================
 
 def get_active_futures_symbols():
@@ -182,7 +206,7 @@ def get_active_futures_symbols():
     )
 
     if not isinstance(data, dict):
-        return {}
+        return None
 
     futures_map = {}
 
@@ -201,74 +225,49 @@ def get_active_futures_symbols():
 
                 futures_map[base] = symbol
 
-                # Hỗ trợ một số token dạng 1000XXX
-                if base.startswith("1000"):
+                if base.startswith("1000") and len(base) > 4:
                     futures_map[base[4:]] = symbol
 
-    log.info(
-        "Đã tìm thấy %s cặp USDT-M Futures",
-        len(futures_map)
-    )
+    log.info("Futures symbols: %s", len(futures_map))
 
     return futures_map
 
 
 # =====================================================
-# MATCH ALPHA WITH FUTURES
+# MATCH ALPHA + FUTURES
 # =====================================================
 
 def get_target_symbols():
 
-    alpha_tokens = get_binance_alpha_tokens()
-    futures_map = get_active_futures_symbols()
+    alpha = get_binance_alpha_tokens()
 
-    if not alpha_tokens or not futures_map:
-        return []
+    if alpha is None:
+        return None
+
+    futures = get_active_futures_symbols()
+
+    if futures is None:
+        return None
 
     targets = sorted({
-        futures_map[token]
-        for token in alpha_tokens
-        if token in futures_map
+        futures[token]
+        for token in alpha
+        if token in futures
     })
 
-    log.info(
-        "Tìm thấy %s cặp Alpha có Futures",
-        len(targets)
-    )
+    if not targets:
+        log.error("No matching Alpha Futures")
+        return None
+
+    log.info("Tracking %s Alpha Futures", len(targets))
+
+    log.info("TARGETS: %s", ", ".join(targets))
 
     return targets
 
 
 # =====================================================
-# GET ALL MARK PRICES
-# =====================================================
-
-def get_all_mark_prices():
-
-    data = get_json(
-        f"{FUTURES_URL}/fapi/v1/premiumIndex"
-    )
-
-    if not isinstance(data, list):
-        log.error("Không lấy được Mark Price")
-        return {}
-
-    prices = {}
-
-    for item in data:
-
-        try:
-            prices[item["symbol"]] = float(
-                item["markPrice"]
-            )
-        except (KeyError, TypeError, ValueError):
-            continue
-
-    return prices
-
-
-# =====================================================
-# GET OPEN INTEREST
+# GET SINGLE OPEN INTEREST
 # =====================================================
 
 def fetch_single_oi(symbol):
@@ -284,10 +283,13 @@ def fetch_single_oi(symbol):
 
     try:
         return symbol, float(data["openInterest"])
-
     except (KeyError, TypeError, ValueError):
         return symbol, None
 
+
+# =====================================================
+# SNAPSHOT ALL OI
+# =====================================================
 
 def snapshot_all_oi(symbols):
 
@@ -297,61 +299,100 @@ def snapshot_all_oi(symbols):
         max_workers=MAX_WORKERS
     ) as executor:
 
-        results = executor.map(
-            fetch_single_oi,
-            symbols
-        )
+        futures = {
+            executor.submit(fetch_single_oi, symbol): symbol
+            for symbol in symbols
+        }
 
-        for symbol, oi in results:
+        for future in as_completed(futures):
 
-            if oi is not None:
-                snapshot[symbol] = oi
+            try:
+                symbol, oi = future.result()
+
+                if oi is not None and oi >= 0:
+                    snapshot[symbol] = oi
+
+            except Exception as e:
+                log.warning("Snapshot error: %s", e)
+
+    ratio = len(snapshot) / len(symbols) if symbols else 0
 
     log.info(
-        "Đã lấy OI thành công %s/%s cặp",
+        "OI Snapshot: %s/%s (%.1f%%)",
         len(snapshot),
-        len(symbols)
+        len(symbols),
+        ratio * 100
     )
+
+    if ratio < MIN_SUCCESS_RATIO:
+        log.warning("Incomplete snapshot - skipped")
+        return None
 
     return snapshot
 
 
 # =====================================================
-# CALCULATE OI CHANGES
+# GET MARK PRICES
+# =====================================================
+
+def get_all_mark_prices():
+
+    data = get_json(
+        f"{FUTURES_URL}/fapi/v1/premiumIndex",
+        timeout=15
+    )
+
+    if not isinstance(data, list):
+        return None
+
+    prices = {}
+
+    for item in data:
+
+        try:
+            symbol = item["symbol"]
+            price = float(item["markPrice"])
+
+            if price > 0:
+                prices[symbol] = price
+
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    return prices
+
+
+# =====================================================
+# CALCULATE OI CHANGE
 # =====================================================
 
 def calculate_results(before, after, prices):
 
     results = []
 
-    for symbol in before:
+    for symbol, previous in before.items():
 
-        if symbol not in after:
+        if symbol not in after or symbol not in prices:
             continue
 
-        if symbol not in prices:
+        current = after[symbol]
+
+        if previous <= 0:
             continue
 
-        prev_qty = before[symbol]
-        curr_qty = after[symbol]
-
-        if prev_qty <= 0:
-            continue
-
-        change_pct = (
-            (curr_qty - prev_qty) / prev_qty
+        change = (
+            (current - previous) / previous
         ) * 100
 
-        if abs(change_pct) < MIN_OI_CHANGE:
+        # Strictly greater than 0.001%
+        if abs(change) <= MIN_OI_CHANGE:
             continue
-
-        price = prices[symbol]
 
         results.append({
             "symbol": symbol,
-            "oi_change_pct": change_pct,
-            "abs_change_pct": abs(change_pct),
-            "current_oi_usd": curr_qty * price
+            "oi_change_pct": change,
+            "abs_change_pct": abs(change),
+            "current_oi_usd": current * prices[symbol]
         })
 
     results.sort(
@@ -359,7 +400,15 @@ def calculate_results(before, after, prices):
         reverse=True
     )
 
-    return results[:TOP_N]
+    return results
+
+
+# =====================================================
+# PER-COIN COOLDOWN
+# =====================================================
+
+coin_last_alert = {}
+discord_lock = threading.Lock()
 
 
 # =====================================================
@@ -368,54 +417,56 @@ def calculate_results(before, after, prices):
 
 def send_discord_notification(coins):
 
-    global last_discord_sent
-    global last_fingerprint
-
     if not DISCORD_WEBHOOK_URL:
-        log.error("Thiếu DISCORD_WEBHOOK_URL")
+        log.error("Missing DISCORD_WEBHOOK_URL")
         return False
 
     if not coins:
-        log.info("Không có biến động OI đạt ngưỡng")
         return False
 
-    fingerprint = tuple(
-        (
-            coin["symbol"],
-            round(coin["oi_change_pct"], 3)
-        )
-        for coin in coins
-    )
+    now = time.time()
 
     with discord_lock:
 
-        now = time.time()
+        eligible = []
 
-        if fingerprint == last_fingerprint:
-            log.info("Bỏ qua thông báo trùng")
-            return False
+        for coin in coins:
 
-        if now - last_discord_sent < DISCORD_COOLDOWN:
-            log.info("Đang trong thời gian cooldown Discord")
+            symbol = coin["symbol"]
+
+            last = coin_last_alert.get(symbol, 0)
+
+            if now - last >= COIN_COOLDOWN:
+                eligible.append(coin)
+
+        eligible = eligible[:TOP_N]
+
+        if not eligible:
+            log.info("All matching coins are in cooldown")
             return False
 
         fields = []
 
-        for idx, coin in enumerate(coins, 1):
+        for idx, coin in enumerate(eligible, 1):
 
             change = coin["oi_change_pct"]
 
-            icon = "🟢" if change > 0 else "🔴"
-            sign = "+" if change > 0 else ""
+            if change > 0:
+                icon = "🟢"
+                direction = "OI INCREASE"
+                sign = "+"
+            else:
+                icon = "🔴"
+                direction = "OI DECREASE"
+                sign = ""
 
             fields.append({
-                "name": (
-                    f"#{idx} {coin['symbol']} {icon}"
-                ),
+                "name": f"#{idx} {coin['symbol']} {icon}",
                 "value": (
-                    f"• **OI Change (60s):** "
-                    f"`{sign}{change:.4f}%`\n"
-                    f"• **Current OI:** "
+                    f"**Direction:** {direction}\n"
+                    f"**OI Change (60s):** "
+                    f"`{sign}{change:.5f}%`\n"
+                    f"**Current OI:** "
                     f"`${coin['current_oi_usd']:,.2f}`"
                 ),
                 "inline": False
@@ -423,48 +474,43 @@ def send_discord_notification(coins):
 
         payload = {
             "username": "Binance Alpha OI Radar",
-            "allowed_mentions": {
-                "parse": []
-            },
+            "allowed_mentions": {"parse": []},
             "embeds": [{
-                "title": "⚡ TOP 3 BINANCE ALPHA OI RADAR",
+                "title": "⚡ BINANCE ALPHA - OI RADAR",
                 "description": (
-                    f"Open Interest changes over 60 seconds.\n"
-                    f"Threshold: `{MIN_OI_CHANGE}%`"
+                    "TOP 3 Open Interest movements\n"
+                    f"Threshold: `{MIN_OI_CHANGE}%`\n"
+                    "Timeframe: `60 seconds`\n"
+                    "Cooldown: `5 minutes per coin`"
                 ),
                 "color": 16766720,
                 "fields": fields,
                 "footer": {
-                    "text": "Binance Futures | 60s OI Scanner"
+                    "text": "Binance USD-M Futures | OI Scanner"
                 }
             }]
         }
 
         try:
 
-            response = http.post(
+            response = requests.post(
                 DISCORD_WEBHOOK_URL,
                 json=payload,
+                headers=HEADERS,
                 timeout=15
             )
 
             if response.status_code in (200, 204):
 
-                last_discord_sent = now
-                last_fingerprint = fingerprint
+                for coin in eligible:
+                    coin_last_alert[coin["symbol"]] = now
 
                 log.info(
-                    "Discord notification sent successfully"
+                    "DISCORD SENT: %s",
+                    ", ".join(c["symbol"] for c in eligible)
                 )
 
                 return True
-
-            if response.status_code == 429:
-                log.warning(
-                    "Discord rate limit: %s",
-                    response.text[:300]
-                )
-                return False
 
             log.error(
                 "Discord HTTP %s: %s",
@@ -473,97 +519,152 @@ def send_discord_notification(coins):
             )
 
         except requests.RequestException as e:
-
-            log.error("Discord request error: %s", e)
+            log.error("Discord error: %s", e)
 
         return False
 
 
 # =====================================================
-# MAIN CONTINUOUS LOOP
+# MAIN BOT
 # =====================================================
 
 def main():
 
-    log.info("======================================")
-    log.info("BINANCE ALPHA OI RADAR STARTED")
-    log.info("======================================")
+    log.info("====================================")
+    log.info("BINANCE ALPHA OI RADAR STARTING")
+    log.info("====================================")
 
-    targets = get_target_symbols()
+    log.info("Threshold: %.5f%%", MIN_OI_CHANGE)
+    log.info("Interval: %s seconds", WAIT_SECONDS)
+    log.info("Coin cooldown: %s seconds", COIN_COOLDOWN)
 
-    if not targets:
-        log.error("Không tìm thấy Alpha Futures")
-        return
+    # Retry initialization instead of exiting
+    targets = None
 
-    log.info("Đang theo dõi %s cặp coin", len(targets))
+    while not targets:
 
-    before = snapshot_all_oi(targets)
+        targets = get_target_symbols()
 
-    if not before:
-        log.error("Không lấy được dữ liệu OI ban đầu")
-        return
+        if not targets:
+            log.error("Initialization failed. Retry in 60s")
+            time.sleep(60)
+
+    before = None
+
+    while before is None:
+
+        before = snapshot_all_oi(targets)
+
+        if before is None:
+            log.warning("Initial snapshot failed. Retry in 30s")
+            time.sleep(30)
+
+    last_refresh = time.monotonic()
 
     while True:
 
         try:
 
-            log.info(
-                "Chờ %s giây để đo OI tiếp theo...",
-                WAIT_SECONDS
+            cycle_start = time.monotonic()
+
+            log.info("------------------------------------")
+            log.info("START NEW OI SCAN")
+
+            # Refresh Alpha list every 30 minutes
+            if (
+                cycle_start - last_refresh
+                >= REFRESH_TARGETS_SECONDS
+            ):
+
+                new_targets = get_target_symbols()
+
+                if new_targets:
+
+                    new_snapshot = snapshot_all_oi(new_targets)
+
+                    if new_snapshot:
+
+                        targets = new_targets
+                        before = new_snapshot
+
+                        log.info("Target list refreshed")
+
+                last_refresh = cycle_start
+
+            elapsed = time.monotonic() - cycle_start
+
+            sleep_time = max(
+                0,
+                WAIT_SECONDS - elapsed
             )
 
-            time.sleep(WAIT_SECONDS)
+            log.info("Waiting %.1f seconds", sleep_time)
 
-            # Lấy snapshot tiếp theo
+            time.sleep(sleep_time)
+
             after = snapshot_all_oi(targets)
 
-            if not after:
-                log.warning("Snapshot mới thất bại")
+            if after is None:
+                log.warning("Bad snapshot. Keeping previous data")
                 continue
 
-            # Lấy giá Mark Price
             prices = get_all_mark_prices()
 
             if not prices:
-                log.warning("Không có Mark Price")
+                log.warning("Mark price unavailable")
                 before = after
                 continue
 
-            # Tính biến động
-            top_coins = calculate_results(
+            results = calculate_results(
                 before,
                 after,
                 prices
             )
 
-            if top_coins:
+            log.info(
+                "Coins above %.5f%%: %s",
+                MIN_OI_CHANGE,
+                len(results)
+            )
 
-                for coin in top_coins:
-                    log.info(
-                        "%s | OI Change: %.4f%% | OI USD: $%.2f",
-                        coin["symbol"],
-                        coin["oi_change_pct"],
-                        coin["current_oi_usd"]
-                    )
+            # Display TOP 10 in Render logs
+            for idx, coin in enumerate(results[:10], 1):
 
-                send_discord_notification(top_coins)
+                log.info(
+                    "RANK %s | %s | OI: %+.5f%% | USD: $%s",
+                    idx,
+                    coin["symbol"],
+                    coin["oi_change_pct"],
+                    f"{coin['current_oi_usd']:,.2f}"
+                )
 
+            if results:
+                send_discord_notification(results)
             else:
-                log.info("Không có coin đạt ngưỡng")
+                log.info("No qualifying OI movements")
 
-            # Snapshot mới trở thành mốc so sánh tiếp theo
             before = after
 
-        except KeyboardInterrupt:
+            log.info("SCAN COMPLETED")
 
+        except KeyboardInterrupt:
             log.info("Bot stopped")
             break
 
         except Exception:
-
-            log.exception("Lỗi vòng lặp chính")
+            log.exception("Main loop error")
             time.sleep(10)
 
 
+# =====================================================
+# START APPLICATION
+# =====================================================
+
 if __name__ == "__main__":
+
+    threading.Thread(
+        target=start_health_server,
+        daemon=True
+    ).start()
+
     main()
