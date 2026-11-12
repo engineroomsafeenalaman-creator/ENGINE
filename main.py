@@ -1,11 +1,9 @@
-
 import os
 import time
 import logging
 import threading
 import requests
 
-from datetime import datetime, timezone
 from flask import Flask, jsonify
 
 # ==========================================
@@ -14,27 +12,40 @@ from flask import Flask, jsonify
 
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
+COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
+
 TOP_SEARCH_URL = (
     "https://web3.binance.com/bapi/defi/v1/public/"
     "wallet-direct/buw/wallet/market/token/pulse/"
     "unified/rank/list/ai"
 )
 
-ALPHA_URL = (
-    "https://www.binance.com/bapi/defi/v1/public/"
-    "wallet-direct/buw/wallet/cex/alpha/all/token/list"
-)
-
 FUTURES_URL = "https://fapi.binance.com"
 
+COINGECKO_URL = (
+    "https://api.coingecko.com/api/v3/coins/markets"
+)
+
 WAIT_SECONDS = 60
+
 MIN_OI_CHANGE = 0.001
+
 TOP_N = 3
+
 COIN_COOLDOWN = 300
 
 TOP_REFRESH = 600
-ALPHA_REFRESH = 1800
+
+MARKETCAP_REFRESH = 1800
+
 REQUEST_INTERVAL = 0.5
+
+# Market Cap filter (USD)
+MIN_MARKET_CAP = 1_000_000
+MAX_MARKET_CAP = 100_000_000_000
+
+# Number of Top Search tokens
+TOP_SEARCH_SIZE = 10
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
@@ -53,7 +64,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-log = logging.getLogger("ALPHA_RADAR")
+log = logging.getLogger("BINANCE_MARKETCAP_OI")
 
 # ==========================================
 # 3. GLOBAL STATE
@@ -62,10 +73,14 @@ log = logging.getLogger("ALPHA_RADAR")
 session = requests.Session()
 
 api_lock = threading.Lock()
+
 api_block_until = 0.0
+
 next_request_time = 0.0
 
 coin_last_alert = {}
+
+marketcap_cache = {}
 
 # ==========================================
 # 4. FLASK
@@ -77,7 +92,7 @@ app = Flask(__name__)
 def home():
     return jsonify({
         "status": "online",
-        "bot": "Binance Alpha OI Radar"
+        "bot": "Binance Top Search MarketCap OI Radar"
     })
 
 @app.route("/health")
@@ -85,10 +100,11 @@ def health():
     return jsonify({"status": "healthy"})
 
 # ==========================================
-# 5. BINANCE REQUEST HANDLER
+# 5. REQUEST HANDLER
 # ==========================================
 
-def get_json(url, method="GET", params=None, body=None):
+def get_json(url, method="GET", params=None, body=None,
+             headers=None):
 
     global api_block_until, next_request_time
 
@@ -97,10 +113,6 @@ def get_json(url, method="GET", params=None, body=None):
         now = time.monotonic()
 
         if now < api_block_until:
-            log.warning(
-                "Binance cooldown: %.0f seconds remaining",
-                api_block_until - now
-            )
             return None
 
         wait = next_request_time - now
@@ -119,8 +131,8 @@ def get_json(url, method="GET", params=None, body=None):
             url,
             params=params,
             json=body,
-            headers=HEADERS,
-            timeout=15
+            headers=headers or HEADERS,
+            timeout=20
         )
 
         if response.status_code in (418, 429):
@@ -130,10 +142,7 @@ def get_json(url, method="GET", params=None, body=None):
             try:
                 delay = float(retry_after)
             except (TypeError, ValueError):
-                delay = (
-                    900 if response.status_code == 418
-                    else 60
-                )
+                delay = 900 if response.status_code == 418 else 60
 
             delay = max(60, delay)
 
@@ -144,7 +153,7 @@ def get_json(url, method="GET", params=None, body=None):
                 )
 
             log.error(
-                "Binance HTTP %s. Pausing %.0f seconds",
+                "HTTP %s. Cooldown %.0f seconds",
                 response.status_code,
                 delay
             )
@@ -152,11 +161,8 @@ def get_json(url, method="GET", params=None, body=None):
             return None
 
         if response.status_code in (403, 451):
-
-            log.error(
-                "Binance access restricted: HTTP %s",
-                response.status_code
-            )
+            log.error("Access restricted: %s",
+                      response.status_code)
             return None
 
         response.raise_for_status()
@@ -164,17 +170,15 @@ def get_json(url, method="GET", params=None, body=None):
         return response.json()
 
     except requests.RequestException as e:
-
-        log.error("Binance request failed: %s", e)
+        log.error("Request failed: %s", e)
 
     except ValueError:
-
-        log.error("Invalid Binance JSON")
+        log.error("Invalid JSON")
 
     return None
 
 # ==========================================
-# 6. GET TOP 10 SEARCH
+# 6. BINANCE TOP SEARCH
 # ==========================================
 
 def get_top_search():
@@ -187,15 +191,11 @@ def get_top_search():
             "sortBy": 2,
             "orderAsc": False,
             "page": 1,
-            "size": 10
+            "size": TOP_SEARCH_SIZE
         }
     )
 
     if not isinstance(data, dict):
-        return None
-
-    if data.get("success") is False:
-        log.error("Top Search API unsuccessful")
         return None
 
     result = data.get("data")
@@ -204,12 +204,11 @@ def get_top_search():
         result = result.get("tokens", [])
 
     if not isinstance(result, list):
-        log.error("Invalid Top Search response")
         return None
 
-    symbols = []
+    tokens = []
 
-    for item in result[:10]:
+    for item in result:
 
         if not isinstance(item, dict):
             continue
@@ -217,54 +216,68 @@ def get_top_search():
         symbol = item.get("symbol")
 
         if symbol:
-            symbols.append(symbol.upper().strip())
+            tokens.append(symbol.upper().strip())
 
-    log.info("TOP SEARCH: %s", symbols)
+    tokens = list(dict.fromkeys(tokens))
 
-    return symbols if symbols else None
+    log.info("TOP SEARCH: %s", tokens)
+
+    return tokens if tokens else None
 
 # ==========================================
-# 7. GET ALPHA TOKENS
+# 7. COINGECKO MARKET CAP
 # ==========================================
 
-def get_alpha_tokens():
+def get_marketcap_data():
 
-    data = get_json(ALPHA_URL)
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "MarketCap-OI-Radar"
+    }
 
-    if not isinstance(data, dict):
+    if COINGECKO_API_KEY:
+        headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
+
+    data = get_json(
+        COINGECKO_URL,
+        params={
+            "vs_currency": "usd",
+            "order": "market_cap_desc",
+            "per_page": 250,
+            "page": 1,
+            "sparkline": "false"
+        },
+        headers=headers
+    )
+
+    if not isinstance(data, list):
+        log.error("CoinGecko MarketCap unavailable")
         return None
 
-    token_data = data.get("data")
+    result = {}
 
-    if isinstance(token_data, dict):
-        token_data = (
-            token_data.get("tokens")
-            or token_data.get("list")
-            or token_data.get("data")
-        )
+    for item in data:
 
-    if not isinstance(token_data, list):
-        log.error("Invalid Alpha token response")
-        return None
+        symbol = item.get("symbol", "").upper()
 
-    symbols = set()
+        market_cap = item.get("market_cap")
 
-    for item in token_data:
+        name = item.get("name", "")
 
-        if not isinstance(item, dict):
+        if not symbol or not market_cap:
             continue
 
-        symbol = item.get("symbol")
+        result.setdefault(symbol, {
+            "name": name,
+            "market_cap": float(market_cap)
+        })
 
-        if symbol:
-            symbols.add(symbol.upper().strip())
+    log.info("MARKETCAP DATA: %s", len(result))
 
-    log.info("ALPHA TOKENS: %s", len(symbols))
-
-    return symbols if symbols else None
+    return result if result else None
 
 # ==========================================
-# 8. MATCH FUTURES SYMBOLS
+# 8. BINANCE FUTURES SYMBOL MAP
 # ==========================================
 
 def get_futures_map():
@@ -287,17 +300,18 @@ def get_futures_map():
         ):
 
             base = item.get("baseAsset", "").upper()
+
             symbol = item.get("symbol")
 
             if base and symbol:
-                result[base] = symbol
+                result.setdefault(base, symbol)
 
     log.info("FUTURES SYMBOLS: %s", len(result))
 
     return result
 
 # ==========================================
-# 9. BUILD TARGET LIST
+# 9. BUILD TARGETS
 # ==========================================
 
 def build_targets():
@@ -307,9 +321,9 @@ def build_targets():
     if not top:
         return None
 
-    alpha = get_alpha_tokens()
+    marketcap = get_marketcap_data()
 
-    if not alpha:
+    if not marketcap:
         return None
 
     futures = get_futures_map()
@@ -321,21 +335,40 @@ def build_targets():
 
     for token in top:
 
-        if token not in alpha:
+        if token not in marketcap:
+            log.info("%s missing MarketCap", token)
             continue
 
-        if token in futures:
-            targets.append(futures[token])
+        mc = marketcap[token]["market_cap"]
 
-    targets = list(dict.fromkeys(targets))
+        if not (
+            MIN_MARKET_CAP <= mc <= MAX_MARKET_CAP
+        ):
+            continue
 
-    log.info("MATCHED ALPHA COINS: %s", targets)
+        if token not in futures:
+            continue
 
-    if not targets:
-        log.warning("No matching Alpha Futures in Top Search")
-        return None
+        targets.append({
+            "symbol": futures[token],
+            "base": token,
+            "name": marketcap[token]["name"],
+            "market_cap": mc
+        })
 
-    return targets
+    log.info(
+        "MATCHED TOP SEARCH + MARKETCAP + FUTURES: %s",
+        len(targets)
+    )
+
+    for coin in targets:
+        log.info(
+            "%s | MC: $%s",
+            coin["symbol"],
+            f"{coin['market_cap']:,.0f}"
+        )
+
+    return targets if targets else None
 
 # ==========================================
 # 10. FETCH OPEN INTEREST
@@ -356,31 +389,39 @@ def fetch_oi(symbol):
     except (KeyError, TypeError, ValueError):
         return None
 
+# ==========================================
+# 11. SNAPSHOT
+# ==========================================
 
-def snapshot_oi(symbols):
+def snapshot_oi(targets):
 
     snapshot = {}
 
-    for symbol in symbols:
+    for coin in targets:
+
+        symbol = coin["symbol"]
 
         oi = fetch_oi(symbol)
 
         if oi is not None and oi > 0:
-            snapshot[symbol] = oi
+
+            snapshot[symbol] = {
+                "oi": oi,
+                "market_cap": coin["market_cap"],
+                "base": coin["base"],
+                "name": coin["name"]
+            }
 
     log.info(
         "OI SNAPSHOT: %s/%s",
         len(snapshot),
-        len(symbols)
+        len(targets)
     )
 
-    if not snapshot:
-        return None
-
-    return snapshot
+    return snapshot if snapshot else None
 
 # ==========================================
-# 11. CALCULATE OI INCREASE
+# 12. CALCULATE OI CHANGE
 # ==========================================
 
 def calculate_results(before, after):
@@ -391,21 +432,29 @@ def calculate_results(before, after):
 
         current = after.get(symbol)
 
-        if current is None or previous <= 0:
+        if current is None:
+            continue
+
+        old_oi = previous["oi"]
+        new_oi = current["oi"]
+
+        if old_oi <= 0:
             continue
 
         change = (
-            (current - previous) / previous
+            (new_oi - old_oi) / old_oi
         ) * 100
-
-        # ONLY OI INCREASE ABOVE 0.001%
 
         if change > MIN_OI_CHANGE:
 
             results.append({
                 "symbol": symbol,
+                "base": current["base"],
+                "name": current["name"],
+                "market_cap": current["market_cap"],
                 "oi_change_pct": change,
-                "current_oi": current
+                "previous_oi": old_oi,
+                "current_oi": new_oi
             })
 
     results.sort(
@@ -416,7 +465,7 @@ def calculate_results(before, after):
     return results
 
 # ==========================================
-# 12. DISCORD NOTIFICATION
+# 13. DISCORD ALERT
 # ==========================================
 
 def send_discord(coins):
@@ -435,7 +484,6 @@ def send_discord(coins):
     ][:TOP_N]
 
     if not eligible:
-        log.info("No eligible Discord alerts")
         return
 
     fields = []
@@ -445,28 +493,35 @@ def send_discord(coins):
         fields.append({
             "name": f"#{index} {coin['symbol']} 🟢",
             "value": (
-                f"**OI Increase:** "
-                f"`+{coin['oi_change_pct']:.6f}%`\n"
-                f"**Current OI:** "
-                f"`{coin['current_oi']:,.4f}`"
+                f"**Name:** `{coin['name']}`\n"
+                f"**OI Increase:** `+{coin['oi_change_pct']:.4f}%`\n"
+                f"**Previous OI:** `{coin['previous_oi']:,.4f}`\n"
+                f"**Current OI:** `{coin['current_oi']:,.4f}`\n"
+                f"**Market Cap:** `${coin['market_cap']:,.0f}`"
             ),
             "inline": False
         })
 
     payload = {
-        "username": "Binance Alpha OI Radar",
+        "username": "Binance MarketCap OI Radar",
         "allowed_mentions": {"parse": []},
         "embeds": [{
-            "title": "⚡ BINANCE ALPHA OI ALERT",
+            "title": "🚨 BINANCE TOP SEARCH OI ALERT",
             "description": (
-                f"OI increase above `{MIN_OI_CHANGE}%`\n"
-                f"Comparison: previous 60-second snapshot"
+                f"OI Increase > `{MIN_OI_CHANGE}%`\n"
+                f"MarketCap source: CoinGecko\n"
+                f"Comparison: {WAIT_SECONDS}-second snapshot"
             ),
             "color": 5763719,
             "fields": fields,
             "footer": {
-                "text": "Binance Futures | Alpha Top Search Radar"
-            }
+                "text": "Binance Futures | Top Search + MarketCap Radar"
+            },
+            "timestamp": (
+                __import__("datetime")
+                .datetime.now(__import__("datetime").timezone.utc)
+                .isoformat()
+            )
         }]
     }
 
@@ -486,11 +541,9 @@ def send_discord(coins):
             log.info("DISCORD ALERT SENT")
 
         elif response.status_code == 429:
-
             log.warning("Discord rate limit")
 
         else:
-
             log.error(
                 "Discord HTTP %s: %s",
                 response.status_code,
@@ -501,12 +554,12 @@ def send_discord(coins):
         log.exception("Discord connection failed")
 
 # ==========================================
-# 13. MAIN SCANNER
+# 14. MAIN SCANNER
 # ==========================================
 
 def main():
 
-    log.info("BINANCE ALPHA OI RADAR STARTED")
+    log.info("BINANCE TOP SEARCH MARKETCAP OI STARTED")
 
     targets = None
     before = None
@@ -518,8 +571,6 @@ def main():
         try:
 
             now = time.monotonic()
-
-            # Refresh Top Search and Alpha targets
 
             if (
                 targets is None
@@ -536,46 +587,37 @@ def main():
 
                         targets = new_targets
                         before = new_snapshot
+
                         last_refresh = time.monotonic()
 
                         log.info("TARGETS UPDATED")
 
                 if targets is None:
 
-                    log.warning(
-                        "Initialization failed. Retry in 60 seconds"
-                    )
+                    log.warning("Initialization failed")
 
                     time.sleep(60)
                     continue
 
-            cycle_start = time.monotonic()
-
-            time.sleep(
-                max(
-                    0,
-                    WAIT_SECONDS - (
-                        time.monotonic() - cycle_start
-                    )
-                )
-            )
+            time.sleep(WAIT_SECONDS)
 
             after = snapshot_oi(targets)
 
             if after is None:
-                log.warning("Snapshot failed; keeping baseline")
+                log.warning("Snapshot failed")
                 continue
 
-            # Require complete matching data
-            if any(symbol not in after for symbol in targets):
-
-                log.warning("Incomplete snapshot; skipping comparison")
+            if any(
+                coin["symbol"] not in after
+                for coin in targets
+            ):
+                log.warning("Incomplete snapshot; skipping")
                 continue
 
             results = calculate_results(before, after)
 
             log.info(
-                "COINS ABOVE +%.5f%%: %s",
+                "OI INCREASE ABOVE %.5f%%: %s",
                 MIN_OI_CHANGE,
                 len(results)
             )
@@ -583,9 +625,10 @@ def main():
             for coin in results[:10]:
 
                 log.info(
-                    "%s | OI INCREASE: +%.6f%%",
+                    "%s | OI +%.4f%% | MC $%s",
                     coin["symbol"],
-                    coin["oi_change_pct"]
+                    coin["oi_change_pct"],
+                    f"{coin['market_cap']:,.0f}"
                 )
 
             if results:
@@ -599,7 +642,7 @@ def main():
             time.sleep(10)
 
 # ==========================================
-# 14. START RENDER SERVICE
+# 15. START SERVER
 # ==========================================
 
 if __name__ == "__main__":
