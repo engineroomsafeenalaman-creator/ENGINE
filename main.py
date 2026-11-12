@@ -1,8 +1,6 @@
 import os
 import time
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from concurrent.futures import ThreadPoolExecutor
 
 # Cấu hình biến môi trường (Lấy từ GitHub Secrets)
@@ -15,7 +13,6 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-# Danh sách các cụm máy chủ Futures của Binance (tự động đổi nếu server chính chặn IP Mỹ của GitHub)
 FAPI_ENDPOINTS = [
     "https://binance.com",
     "https://binance.com",
@@ -23,64 +20,48 @@ FAPI_ENDPOINTS = [
     "https://binance.com"
 ]
 
-def create_session():
-    """Tạo session có cơ chế tự động thử lại khi nghẽn mạng"""
-    session = requests.Session()
-    retry = Retry(
-        total=3,
-        backoff_factor=0.5,
-        status_forcelist=[429, 500, 502, 503, 504]
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    session.headers.update(HEADERS)
-    return session
-
-session = create_session()
+def send_discord_raw(payload):
+    """Hàm gửi dữ liệu trực tiếp tới Discord Webhook"""
+    if not DISCORD_WEBHOOK_URL:
+        print("[LỖI NGHIÊM TRỌNG] Chưa tìm thấy DISCORD_WEBHOOK_URL trong GitHub Secrets!")
+        return
+    try:
+        res = requests.post(DISCORD_WEBHOOK_URL.strip(), json=payload, timeout=15)
+        print(f"[Discord Status] Mã phản hồi: {res.status_code}")
+        if res.status_code not in (200, 204):
+            print(f"[Discord Error] Nội dung lỗi: {res.text}")
+    except Exception as e:
+        print(f"[Discord Exception] Lỗi kết nối Discord: {e}")
 
 def get_working_fapi_base():
-    """Tìm cụm server Binance Futures không bị chặn IP"""
+    """Kiểm tra server Binance Futures nào cho phép truy cập từ IP hiện tại"""
     for base_url in FAPI_ENDPOINTS:
         try:
-            res = session.get(f"{base_url}/fapi/v1/ping", timeout=5)
+            res = requests.get(f"{base_url}/fapi/v1/exchangeInfo", headers=HEADERS, timeout=8)
             if res.status_code == 200:
                 print(f"[OK] Kết nối thành công tới: {base_url}")
-                return base_url
-        except Exception:
-            continue
-    return FAPI_ENDPOINTS[0]
+                return base_url, res.json()
+            else:
+                print(f"[Bị chặn] {base_url} trả về mã: {res.status_code}")
+        except Exception as e:
+            print(f"[Lỗi mạng] {base_url}: {e}")
+    return None, None
 
 def get_binance_alpha_tokens():
-    """Lấy danh sách toàn bộ token thuộc hệ Binance Alpha"""
+    """Lấy danh sách token thuộc hệ Binance Alpha"""
     url = "https://binance.com"
     try:
-        res = session.get(url, timeout=15)
-        res.raise_for_status()
-        data = res.json()
-        tokens = data.get("data", [])
-        return {t.get("symbol", "").strip().upper() for t in tokens if t.get("symbol")}
+        res = requests.get(url, headers=HEADERS, timeout=15)
+        if res.status_code == 200:
+            tokens = res.json().get("data", [])
+            alpha_set = {t.get("symbol", "").strip().upper() for t in tokens if t.get("symbol")}
+            print(f"[OK] Lấy được {len(alpha_set)} token từ danh sách Binance Alpha.")
+            return alpha_set
+        else:
+            print(f"[Lỗi Alpha API] Mã trạng thái: {res.status_code}")
     except Exception as e:
-        print(f"[Lỗi] Không lấy được danh sách Binance Alpha: {e}")
-        return set()
-
-def get_active_futures_symbols(fapi_base):
-    """Lấy danh sách các cặp USDT Futures đang mở giao dịch"""
-    url = f"{fapi_base}/fapi/v1/exchangeInfo"
-    try:
-        res = session.get(url, timeout=15)
-        res.raise_for_status()
-        data = res.json()
-        futures_map = {}
-        for s in data.get("symbols", []):
-            if s.get("status") == "TRADING" and s.get("quoteAsset") == "USDT":
-                base = s.get("baseAsset", "").upper()
-                symbol = s.get("symbol")
-                clean_base = base[4:] if base.startswith("1000") else base
-                futures_map[clean_base] = symbol
-        return futures_map
-    except Exception as e:
-        print(f"[Lỗi] Không lấy được danh sách Futures: {e}")
-        return {}
+        print(f"[Lỗi Alpha API] {e}")
+    return set()
 
 def check_oi_change(args):
     """Lấy dữ liệu Open Interest 2 nến 5m gần nhất và tính % biến động"""
@@ -92,37 +73,76 @@ def check_oi_change(args):
         "limit": 2
     }
     try:
-        res = session.get(url, params=params, timeout=10)
-        if res.status_code != 200:
-            return None
-        data = res.json()
-        if isinstance(data, list) and len(data) == 2:
-            prev_oi = float(data[0]["sumOpenInterestValue"])
-            curr_oi = float(data[1]["sumOpenInterestValue"])
-            if prev_oi > 0:
-                change_pct = ((curr_oi - prev_oi) / prev_oi) * 100
-                return {
-                    "symbol": symbol,
-                    "oi_change_pct": change_pct,
-                    "abs_change_pct": abs(change_pct),
-                    "current_oi_usd": curr_oi
-                }
+        res = requests.get(url, params=params, headers=HEADERS, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, list) and len(data) == 2:
+                prev_oi = float(data["sumOpenInterestValue"])
+                curr_oi = float(data["sumOpenInterestValue"])
+                if prev_oi > 0:
+                    change_pct = ((curr_oi - prev_oi) / prev_oi) * 100
+                    return {
+                        "symbol": symbol,
+                        "oi_change_pct": change_pct,
+                        "abs_change_pct": abs(change_pct),
+                        "current_oi_usd": curr_oi
+                    }
     except Exception:
         pass
     return None
 
-def send_discord_notification(top_coins):
-    """Gửi bảng xếp hạng Top 3 về kênh Discord"""
-    if not DISCORD_WEBHOOK_URL:
-        print("[Cảnh báo] Chưa cài đặt biến DISCORD_WEBHOOK_URL trong GitHub Secrets!")
+def main():
+    print("=== BẮT ĐẦU CHU KỲ QUÉT BINANCE ALPHA OI ===")
+    
+    # 1. Kiểm tra kết nối Binance Futures
+    fapi_base, exchange_data = get_working_fapi_base()
+    if not fapi_base or not exchange_data:
+        msg = "⚠️ **Lỗi kết nối Binance Futures:** Máy chủ GitHub (IP Mỹ) đang bị Binance chặn (Lỗi 451). Cần chạy qua VPS châu Á hoặc Proxy."
+        print(msg)
+        send_discord_raw({"content": msg})
         return
 
-    if not top_coins:
-        print("[Thông báo] Không có đồng Alpha nào biến động OI > 0.001% trong 5 phút vừa qua.")
+    # 2. Lấy danh sách Binance Alpha
+    alpha_tokens = get_binance_alpha_tokens()
+    if not alpha_tokens:
+        msg = "⚠️ **Lỗi kết nối Binance Alpha:** Không tải được danh sách token Alpha."
+        print(msg)
+        send_discord_raw({"content": msg})
         return
 
+    # 3. Đối chiếu các cặp USDT Futures
+    futures_map = {}
+    for s in exchange_data.get("symbols", []):
+        if s.get("status") == "TRADING" and s.get("quoteAsset") == "USDT":
+            base = s.get("baseAsset", "").upper()
+            symbol = s.get("symbol")
+            clean_base = base[4:] if base.startswith("1000") else base
+            futures_map[clean_base] = symbol
+
+    target_symbols = [(futures_map[t], fapi_base) for t in alpha_tokens if t in futures_map]
+    print(f"[OK] Có {len(target_symbols)} cặp Alpha đang giao dịch Futures.")
+
+    # 4. Quét OI khung 5 phút
+    results = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures_data = executor.map(check_oi_change, target_symbols)
+        for item in futures_data:
+            if item and item["abs_change_pct"] > MIN_OI_CHANGE:
+                results.append(item)
+
+    results.sort(key=lambda x: x["abs_change_pct"], reverse=True)
+    top_3 = results[:3]
+
+    if not top_3:
+        print("[Kết quả] Không có đồng Alpha nào biến động OI > 0.001% trong 5 phút qua.")
+        send_discord_raw({
+            "content": f"ℹ️ **Radar 5m:** Đã quét {len(target_symbols)} cặp Alpha nhưng chưa có đồng nào biến động OI trên `{MIN_OI_CHANGE}%`."
+        })
+        return
+
+    # 5. Đóng gói tin nhắn Top 3 gửi Discord
     fields = []
-    for idx, coin in enumerate(top_coins, start=1):
+    for idx, coin in enumerate(top_3, start=1):
         sign = "+" if coin["oi_change_pct"] >= 0 else ""
         trend_icon = "🟢" if coin["oi_change_pct"] > 0 else "🔴"
         fields.append({
@@ -148,49 +168,7 @@ def send_discord_notification(top_coins):
             }
         ]
     }
-
-    try:
-        res = session.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
-        if res.status_code in (200, 204):
-            print("[Thành công] Đã bắn thông báo về Discord!")
-        else:
-            print(f"[Lỗi] Discord từ chối nhận tin: {res.status_code} - {res.text}")
-    except Exception as e:
-        print(f"[Lỗi] Không thể kết nối tới Discord: {e}")
-
-def main():
-    start_time = time.time()
-    fapi_base = get_working_fapi_base()
-
-    print("1. Đang tải danh sách token Binance Alpha...")
-    alpha_tokens = get_binance_alpha_tokens()
-    if not alpha_tokens:
-        return
-
-    print("2. Đang đối chiếu với thị trường Binance Futures...")
-    futures_map = get_active_futures_symbols(fapi_base)
-    target_symbols = [(futures_map[t], fapi_base) for t in alpha_tokens if t in futures_map]
-    print(f"-> Tìm thấy {len(target_symbols)} cặp Alpha đang mở Futures.")
-
-    if not target_symbols:
-        return
-
-    print("3. Đang quét dữ liệu OI khung 5 phút...")
-    results = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures_data = executor.map(check_oi_change, target_symbols)
-        for item in futures_data:
-            if item and item["abs_change_pct"] > MIN_OI_CHANGE:
-                results.append(item)
-
-    results.sort(key=lambda x: x["abs_change_pct"], reverse=True)
-    top_3 = results[:3]
-
-    for c in top_3:
-        print(f"Top: {c['symbol']} | Biến động: {c['oi_change_pct']:.4f}% | OI: ${c['current_oi_usd']:,.2f}")
-
-    send_discord_notification(top_3)
-    print(f"Hoàn tất chu kỳ quét trong {time.time() - start_time:.2f} giây.")
+    send_discord_raw(payload)
 
 if __name__ == "__main__":
     main()
