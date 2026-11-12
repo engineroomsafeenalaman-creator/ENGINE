@@ -1,27 +1,26 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import concurrent.futures
 import os
 import threading
 import time
 from flask import Flask
 import requests
-from requests.adapters import HTTPAdapter
 
+# ⚠️ NHỚ TẠO LẠI LINK WEBHOOK MỚI TRÊN DISCORD VÀ DÁN VÀO ĐÂY
 WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
-NGUONG_TY_LE_OI = 1.0001
-CHU_KY_QUET_GIAY = 30
-SO_COIN_TOI_DA = 5
-SO_LUONG_SONG_SONG = 10
+# Ngưỡng tăng OI trong 1 phút (1.115 = tăng 11.5% trở lên)
+NGUONG_TY_LE_OI = 1.115
 
-BINANCE_ENDPOINTS = [
-    "https://binance.com",
-    "https://binance.com",
-    "https://binance.com",
-    "https://binance.com",
-]
-current_ep_idx = 0
+TEN_SAN = "binance" + ".com"
+DOMAIN_WEB = "https://www." + TEN_SAN
+DOMAIN_FAPI = "https://fapi." + TEN_SAN
+HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-DANH_SACH_ALPHA = {
+# Dùng chung 1 Session giúp tiết kiệm RAM và tránh nghẽn kết nối trên Render
+SESSION = requests.Session()
+SESSION.headers.update(HEADERS)
+
+DANH_SACH_DU_PHONG = [
     "AIXBTUSDT", "ZKJUSDT", "ARCUSDT", "GRIFFAINUSDT", "SWARMSUSDT",
     "ALCHUSDT", "FARTCOINUSDT", "PENGUUSDT", "VIRTUALUSDT", "VANAUSDT",
     "VELODROMEUSDT", "MOVEUSDT", "MEUSDT", "MORPHOUSDT", "CHILLGUYUSDT",
@@ -75,194 +74,139 @@ DANH_SACH_ALPHA = {
     "BOSUSDT", "MMTUSDT", "TRUSTUSDT", "UAIUSDT", "FOLKSUSDT",
     "STABLEUSDT", "JCTUSDT", "ALLOUSDT", "CLANKERUSDT", "BEATUSDT",
     "SENTUSDT", "PLAYSOLANAUSDT", "METUSDT", "BOBUSDT",
-}
+]
 
 app = Flask(__name__)
 
-session = requests.Session()
-adapter = HTTPAdapter(pool_connections=SO_LUONG_SONG_SONG + 5, pool_maxsize=SO_LUONG_SONG_SONG + 5)
-session.mount("https://", adapter)
-session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json",
-})
 
-executor = ThreadPoolExecutor(max_workers=SO_LUONG_SONG_SONG)
-rate_limit_event = threading.Event()
-_bot_started = False
-_start_lock = threading.Lock()
-
-
-def get_base_url():
-    return BINANCE_ENDPOINTS[current_ep_idx % len(BINANCE_ENDPOINTS)]
-
-
-def switch_base_url():
-    global current_ep_idx
-    current_ep_idx += 1
-    return get_base_url()
-
-
-def format_usd(value):
-    if value >= 1_000_000:
-        return f"${value / 1_000_000:.2f}M"
-    if value >= 1_000:
-        return f"${value / 1_000:.1f}K"
-    return f"${value:.0f}"
+@app.route("/")
+def home():
+    return "Bot canh OI 1 phut dang hoat dong binh thuong!"
 
 
 def gui_discord(noi_dung):
-    url = os.environ.get("WEBHOOK_URL", "") or WEBHOOK_URL
-    if not url or "://discord.com" not in url:
-        print(noi_dung, flush=True)
-        return
     try:
-        for i in range(0, len(noi_dung), 1900):
-            doan_tin = noi_dung[i : i + 1900]
-            res = session.post(url, json={"content": doan_tin}, timeout=10)
-            if res.status_code == 429:
-                retry_after = float(res.json().get("retry_after", 2))
-                time.sleep(retry_after)
-                session.post(url, json={"content": doan_tin}, timeout=10)
-            time.sleep(0.3)
+        res = requests.post(WEBHOOK_URL, json={"content": noi_dung}, timeout=10)
+        print(f"Gửi Discord status: {res.status_code}", flush=True)
     except Exception as e:
-        print(f"Loi gui Discord: {e}", flush=True)
+        print(f"Lỗi gửi Discord: {e}", flush=True)
 
 
-def kiem_tra_ket_noi_binance():
-    chi_tiet_loi = []
-    for _ in range(len(BINANCE_ENDPOINTS)):
-        ep = get_base_url()
-        try:
-            r = session.get(f"{ep}/fapi/v1/ticker/price?symbol=BTCUSDT", timeout=5)
-            if r.status_code == 200:
-                return True, f"Ket noi thanh cong toi `{ep}`"
-            chi_tiet_loi.append(f"`{ep}` -> HTTP **{r.status_code}**")
-        except Exception as e:
-            chi_tiet_loi.append(f"`{ep}` -> Loi: {str(e)[:40]}")
-        switch_base_url()
-    return False, "\n".join(chi_tiet_loi)
-
-
-def lay_1_oi_binance(sym, base_url):
-    if rate_limit_event.is_set():
-        return sym, 0.0
-    url = f"{base_url}/fapi/v1/openInterest?symbol={sym}"
+def lay_danh_sach_coin_alpha_futures():
     try:
-        res = session.get(url, timeout=4)
+        path_alpha = "/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
+        res_alpha = SESSION.get(DOMAIN_WEB + path_alpha, timeout=15).json()
+
+        alpha_symbols = {
+            item.get("symbol", "").upper()
+            for item in res_alpha.get("data", [])
+            if item.get("symbol")
+        }
+        print(f"Lấy được {len(alpha_symbols)} token Alpha", flush=True)
+
+        res_prices = SESSION.get(DOMAIN_FAPI + "/fapi/v1/ticker/price", timeout=10).json()
+        if isinstance(res_prices, list) and len(res_prices) > 0:
+            danh_sach = list({
+                item["symbol"]
+                for item in res_prices
+                if item.get("symbol", "").endswith("USDT")
+                and item["symbol"][:-4] in alpha_symbols
+            })
+            if danh_sach:
+                return danh_sach
+    except Exception as e:
+        print(f"Chuyển sang dùng danh sách dự phòng do: {e}", flush=True)
+
+    return list(set(DANH_SACH_DU_PHONG))
+
+
+def lay_oi_1_coin(symbol):
+    # Nghỉ cực ngắn 0.08s để dàn đều request, tránh bị Binance chặn IP Render
+    time.sleep(0.08)
+    url = DOMAIN_FAPI + f"/fapi/v1/openInterest?symbol={symbol}"
+    try:
+        res = SESSION.get(url, timeout=5)
         if res.status_code == 200:
-            return sym, float(res.json().get("openInterest", 0))
-        if res.status_code in (418, 429):
-            rate_limit_event.set()
+            data = res.json()
+            return symbol, float(data["openInterest"])
+        elif res.status_code in (418, 429):
+            # Nếu bị Binance cảnh báo quá tải, nghỉ nhẹ 2 giây
+            time.sleep(2)
+        return symbol, None
     except Exception:
-        pass
-    return sym, 0.0
+        return symbol, None
 
 
-def lay_toan_bo_du_lieu_binance(danh_sach_hop_le):
+def quet_toan_bo_oi(danh_sach_coin):
     ket_qua = {}
-    gia_map = {}
-    rate_limit_event.clear()
-    base_url = get_base_url()
-
-    try:
-        res_gia = session.get(f"{base_url}/fapi/v1/ticker/price", timeout=6)
-        if res_gia.status_code == 200:
-            for item in res_gia.json():
-                sym = item.get("symbol", "")
-                if sym in danh_sach_hop_le:
-                    gia_map[sym] = float(item.get("price", 0))
-        elif res_gia.status_code in (418, 429):
-            rate_limit_event.set()
-            return ket_qua
-    except Exception as e:
-        print(f"Loi lay gia ({base_url}): {e}", flush=True)
-        switch_base_url()
-        return ket_qua
-
-    futures = [executor.submit(lay_1_oi_binance, sym, base_url) for sym in gia_map]
-    for future in as_completed(futures):
-        sym, oi = future.result()
-        gia = gia_map.get(sym, 0)
-        if oi > 0 and gia > 0:
-            ket_qua[sym] = {"oi": oi, "gia": gia, "oi_usd": oi * gia}
-
+    # Giảm xuống 4 luồng để gọi êm ái, không làm nghẽn IP dùng chung
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(lay_oi_1_coin, sym) for sym in danh_sach_coin]
+        for f in concurrent.futures.as_completed(futures):
+            sym, oi = f.result()
+            if oi is not None and oi > 0:
+                ket_qua[sym] = oi
     return ket_qua
 
 
 def chay_bot_canh_oi():
-    ok, thong_bao = kiem_tra_ket_noi_binance()
-    if not ok:
-        gui_discord(
-            f"**BINANCE TU CHOI KET NOI:**\n{thong_bao}\n\n"
-            "*IP Server Render dang bi Binance chan (451). Hay doi Region sang Singapore!*"
-        )
-        return
+    print("Bắt đầu khởi động luồng quét OI...", flush=True)
+    danh_sach_alpha = lay_danh_sach_coin_alpha_futures()
+    print(f"✅ Đã sẵn sàng quét {len(danh_sach_alpha)} coin Alpha...", flush=True)
 
-    t0 = time.time()
-    du_lieu_truoc = lay_toan_bo_du_lieu_binance(DANH_SACH_ALPHA)
-    toc_do = time.time() - t0
     gui_discord(
-        f"**BOT CANH OI DA KHOI DONG!**\n"
-        f"{thong_bao}\n"
-        f"Da tai du lieu **{len(du_lieu_truoc)}** coin trong `{toc_do:.2f}s`."
+        f"✅ Bot đã kết nối và đang quét **{len(danh_sach_alpha)}** coin Alpha (Ngưỡng 1p: **+{(NGUONG_TY_LE_OI - 1)*100:.1f}%**)!"
     )
 
-    while True:
-        time.sleep(CHU_KY_QUET_GIAY)
-        if rate_limit_event.is_set():
-            print("Bi gioi han Rate Limit (429/418), tam nghi 60s...", flush=True)
-            time.sleep(60)
-            switch_base_url()
+    oi_phut_truoc = quet_toan_bo_oi(danh_sach_alpha)
+    print(f"Lần quét đầu tiên lấy được OI của {len(oi_phut_truoc)} coin.", flush=True)
+    coin_dang_theo_doi_giam = set()
 
-        du_lieu_sau = lay_toan_bo_du_lieu_binance(DANH_SACH_ALPHA)
-        if not du_lieu_sau:
+    while True:
+        # Đợi đúng 60 giây cho khung 1 phút chuẩn
+        time.sleep(60)
+        oi_hien_tai = quet_toan_bo_oi(danh_sach_alpha)
+
+        if not oi_hien_tai:
+            print("⚠️ IP dùng chung trên Render đang tạm giới hạn, đợi chu kỳ sau...", flush=True)
             continue
 
-        bien_dong = []
-        for sym, sau in du_lieu_sau.items():
-            truoc = du_lieu_truoc.get(sym)
-            if not truoc or truoc["oi"] <= 0:
+        coin_tang = []
+        coin_giam = []
+
+        for sym, oi_moi in oi_hien_tai.items():
+            oi_cu = oi_phut_truoc.get(sym)
+            if not oi_cu or oi_cu == 0:
                 continue
 
-            ty_le_oi = sau["oi"] / truoc["oi"]
-            if ty_le_oi >= NGUONG_TY_LE_OI:
-                phan_tram_oi = (ty_le_oi - 1) * 100
-                phan_tram_gia = ((sau["gia"] - truoc["gia"]) / truoc["gia"]) * 100
-                bien_dong.append({
-                    "sym": sym,
-                    "phan_tram_oi": phan_tram_oi,
-                    "phan_tram_gia": phan_tram_gia,
-                    "oi_usd": sau["oi_usd"],
-                    "gia": sau["gia"],
-                })
+            ty_le = oi_moi / oi_cu
+            phan_tram = (ty_le - 1) * 100
 
-        if bien_dong:
-            bien_dong.sort(key=lambda x: x["phan_tram_oi"], reverse=True)
-            top_coin = bien_dong[:SO_COIN_TOI_DA]
-            dong_tin = [f"**BIEN DONG OI MANH ({CHU_KY_QUET_GIAY}s qua):**"]
-            for c in top_coin:
-                dong_tin.append(
-                    f"- **{c['sym']}**: OI `+{c['phan_tram_oi']:.2f}%` ({format_usd(c['oi_usd'])}) | "
-                    f"Gia: `{c['gia']}` (`{c['phan_tram_gia']:+.2f}%`)"
-                )
-            gui_discord("\n".join(dong_tin))
+            # Kiểm tra điều kiện tăng >= 11.5% (1.115)
+            if ty_le >= NGUONG_TY_LE_OI:
+                coin_dang_theo_doi_giam.add(sym)
+                coin_tang.append(f"🚀 **{sym}**: tăng **+{phan_tram:.2f}%** (x{ty_le:.3f})")
+            elif sym in coin_dang_theo_doi_giam and oi_moi < oi_cu:
+                coin_dang_theo_doi_giam.remove(sym)
+                coin_giam.append(f"🔻 **{sym}**: bắt đầu giảm OI (**{phan_tram:.2f}%**)")
 
-        du_lieu_truoc = du_lieu_sau
+        # Gửi thông báo gộp 1 tin nhắn duy nhất mỗi phút (chống spam Discord)
+        tin_nhan_tong = []
+        if coin_tang:
+            tin_nhan_tong.append("🔥 **PHÁT HIỆN OI TĂNG ĐỘT BIẾN (1P):**\n" + "\n".join(coin_tang))
+        if coin_giam:
+            tin_nhan_tong.append("📉 **CẬP NHẬT XẢ OI SAU SÓNG:**\n" + "\n".join(coin_giam))
+
+        if tin_nhan_tong:
+            gui_discord("\n\n".join(tin_nhan_tong))
+
+        # Cập nhật dữ liệu mới đè lên dữ liệu cũ (chống tràn RAM tuyệt đối)
+        oi_phut_truoc = oi_hien_tai
 
 
-def khoi_dong_bot_ngam():
-    global _bot_started
-    with _start_lock:
-        if not _bot_started:
-            _bot_started = True
-t = threading.Thread(target=chay_bot_canh_oi, daemon=True)
-t.start()
-@app.route("/")
-def health_check():
-khoi_dong_bot_ngam()
-return "Bot Canh OI dang hoat dong!", 200
-khoi_dong_bot_ngam()
-if name == "main":
-port = int(os.environ.get("PORT", 10000))
-app.run(host="0.0.0.0", port=port)
+# Chạy luồng quét OI song song với Web Server của Render
+threading.Thread(target=chay_bot_canh_oi, daemon=True).start()
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
