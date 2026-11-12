@@ -1,184 +1,174 @@
-import json
-import time
-import threading
 import os
+import time
 import requests
-import websocket
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from concurrent.futures import ThreadPoolExecutor
 
-# ==========================================
-# ĐÃ GẮN SẴN LINK WEBHOOK ENGINE 3 CỦA BẠN:
-DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
-BOT_NAME = "ENGINE 3"
-MIN_OI_CHANGE_PCT = 0.001  # Ngưỡng lọc OI tăng > 0.001%
-# ==========================================
+# Cấu hình biến môi trường (Lấy tự động từ GitHub Secrets)
+DISCORD_WEBHOOK_URL = os.environ.get("https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN")
+TIMEFRAME = "5m"          # Khung thời gian 5 phút
+MIN_OI_CHANGE = 0.001     # Ngưỡng biến động tối thiểu (%)
 
-# Danh sách các đồng thuộc hệ sinh thái Binance Alpha
-ALPHA_COINS = [
-    "INFINITUSDT", "SWARMSUSDT", "VELVETUSDT", "COAIUSDT", "ICNTUSDT", "NAORISUSDT",
-    "XPINUSDT", "BLESSUSDT", "QUACKUSDT", "UNIBASEUSDT", "OKZOOUSDT", "YOOLDOUSDT",
-    "OVERTAKEUSDT", "SQDUSDT", "ONEUSDT", "OLAXBTUSDT", "B2USDT", "MYXUSDT",
-    "MERLUSDT", "ZKVUSDT", "ANOMAUSDT", "BITLIGHTUSDT", "GOATUSDT", "HANAUSDT",
-    "RIVERUSDT", "NUMINEUSDT", "FROGGIEUSDT", "AOPUSDT", "DILLUSDT", "STBLUSDT",
-    "RAVEUSDT", "TAUSDT", "LYNUSDT", "BREVUSDT", "ZKPUSDT", "AKEUSDT", "IDOLUSDT",
-    "ARIAUSDT", "QUQUSDT", "ALCHUSDT", "COOKIEUSDT", "AIXBTUSDT", "CGPTUSDT",
-    "GRIFFAINUSDT", "ZEREBROUSDT", "AVAAIUSDT", "VIRTUALUSDT", "FARTCOINUSDT",
-    "ARCUSDT", "PIPPINUSDT", "TSTUSDT", "KAITOUSDT", "SHELLUSDT", "MUBARAKUSDT",
-    "TUTUSDT", "BROCCOLI714USDT", "BROCCOLIUSDT", "BANANAS31USDT", "SIRENUSDT",
-    "BIDUSDT", "IRYSUSDT", "BTRUSDT", "SOPHUSDT", "ZKJUSDT", "BIOUSDT", "SOLVUSDT",
-    "LAYERUSDT", "IPUSDT", "REDUSDT", "GPSUSDT", "VINEUSDT", "JELLYJELLYUSDT",
-    "CHILLGUYUSDT", "ACTUSDT", "PNUTUSDT", "MOODENGUSDT", "HIPPOUSDT", "BANUSDT",
-    "MELANIAUSDT", "TRUMPUSDT", "KOMAUSDT", "THEUSDT", "1000WHYUSDT", "1000CHEEMSUSDT",
-    "NEIROUSDT", "PENGUUSDT", "USUALUSDT", "MOVEUSDT", "MEUSDT", "VANAUSDT",
-    "BERAUSDT", "ANIMEUSDT", "PLUMEUSDT", "SONICUSDT", "ZORAUSDT", "INITUSDT",
-    "HYPERUSDT", "KERNELUSDT", "BABYUSDT", "STOUSDT", "PARTIUSDT", "NILUSDT",
-    "BRUSDT", "BMTUSDT", "FORMUSDT", "GUNUSDT", "WALUSDT", "BANKUSDT", "EPTUSDT"
-]
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
 
-live_oi_data = {}
-data_lock = threading.Lock()
+def create_session():
+    """Tạo session có cơ chế tự động thử lại nếu API phản hồi chậm hoặc lỗi tạm thời"""
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=0.5,
+        status_forcelist=[429, 500, 502, 503, 504]
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.headers.update(HEADERS)
+    return session
 
-def send_discord_raw(text):
-    payload = {
-        "username": BOT_NAME,
-        "content": text
+session = create_session()
+
+def get_binance_alpha_tokens():
+    """Lấy danh sách toàn bộ token thuộc hệ Binance Alpha"""
+    url = "https://binance.com"
+    try:
+        res = session.get(url, timeout=15)
+        res.raise_for_status()
+        data = res.json()
+        tokens = data.get("data", [])
+        return {t.get("symbol", "").strip().upper() for t in tokens if t.get("symbol")}
+    except Exception as e:
+        print(f"[Lỗi] Không lấy được danh sách Binance Alpha: {e}")
+        return set()
+
+def get_active_futures_symbols():
+    """Lấy danh sách các cặp USDT Futures đang mở giao dịch"""
+    url = "https://binance.com"
+    try:
+        res = session.get(url, timeout=15)
+        res.raise_for_status()
+        data = res.json()
+        futures_map = {}
+        for s in data.get("symbols", []):
+            if s.get("status") == "TRADING" and s.get("quoteAsset") == "USDT":
+                base = s.get("baseAsset", "").upper()
+                symbol = s.get("symbol")
+                # Xử lý các mã có tiền tố 1000 (VD: 1000PEPE -> PEPE)
+                clean_base = base[4:] if base.startswith("1000") else base
+                futures_map[clean_base] = symbol
+        return futures_map
+    except Exception as e:
+        print(f"[Lỗi] Không lấy được danh sách Futures: {e}")
+        return {}
+
+def check_oi_change(symbol):
+    """Lấy dữ liệu Open Interest 2 nến 5m gần nhất và tính % biến động"""
+    url = "https://binance.com"
+    params = {
+        "symbol": symbol,
+        "period": TIMEFRAME,
+        "limit": 2
     }
     try:
-        res = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
-        if res.status_code == 429:
-            print("⚠️ Discord Webhook đang giới hạn tốc độ gửi tin, tạm nghỉ 10s...", flush=True)
-    except Exception as e:
-        print(f"❌ Lỗi gửi Discord: {e}", flush=True)
-
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"ENGINE 3 Real-time Alpha OI Stream Active")
-    def log_message(self, format, *args):
+        res = session.get(url, params=params, timeout=10)
+        if res.status_code != 200:
+            return None
+        data = res.json()
+        if isinstance(data, list) and len(data) == 2:
+            prev_oi = float(data[0]["sumOpenInterestValue"])
+            curr_oi = float(data[1]["sumOpenInterestValue"])
+            if prev_oi > 0:
+                change_pct = ((curr_oi - prev_oi) / prev_oi) * 100
+                return {
+                    "symbol": symbol,
+                    "oi_change_pct": change_pct,
+                    "abs_change_pct": abs(change_pct),
+                    "current_oi_usd": curr_oi
+                }
+    except Exception:
         pass
+    return None
 
-def start_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    server.serve_forever()
+def send_discord_notification(top_coins):
+    """Gửi bảng xếp hạng Top 3 về kênh Discord"""
+    if not DISCORD_WEBHOOK_URL:
+        print("[Cảnh báo] Chưa cài đặt biến DISCORD_WEBHOOK_URL trong GitHub Secrets!")
+        return
 
-# Nhận luồng Open Interest (OI) thực tế từng giây qua WebSocket (Không bao giờ dính 429)
-def start_realtime_oi_stream():
-    ws_url = "wss://://bybit.com"
+    if not top_coins:
+        print("[Thông báo] Không có đồng Alpha nào biến động OI > 0.001% trong 5 phút vừa qua.")
+        return
 
-    def on_message(ws, message):
-        try:
-            msg = json.loads(message)
-            topic = msg.get("topic", "")
-            if topic.startswith("tickers."):
-                data = msg.get("data", {})
-                sym = data.get("symbol")
-                if sym:
-                    with data_lock:
-                        if sym not in live_oi_data:
-                            live_oi_data[sym] = {"oi": 0.0, "price": 0.0}
-                        if "openInterest" in data:
-                            live_oi_data[sym]["oi"] = float(data["openInterest"])
-                        if "lastPrice" in data:
-                            live_oi_data[sym]["price"] = float(data["lastPrice"])
-        except Exception:
-            pass
+    fields = []
+    for idx, coin in enumerate(top_coins, start=1):
+        sign = "+" if coin["oi_change_pct"] >= 0 else ""
+        trend_icon = "🟢" if coin["oi_change_pct"] > 0 else "🔴"
+        fields.append({
+            "name": f"#{idx} • {coin['symbol']} {trend_icon}",
+            "value": (
+                f"• **Biến động OI (5m):** `{sign}{coin['oi_change_pct']:.4f}%`\n"
+                f"• **Tổng OI hiện tại:** `${coin['current_oi_usd']:,.2f}`"
+            ),
+            "inline": False
+        })
 
-    def on_open(ws):
-        print("✅ Đã kết nối luồng Open Interest WebSocket thành công!", flush=True)
-        # Đăng ký nhận dữ liệu OI từng giây của toàn bộ danh sách Alpha (chia nhóm 10 mã/lần để gửi mượt)
-        for i in range(0, len(ALPHA_COINS), 10):
-            batch = [f"tickers.{sym}" for sym in ALPHA_COINS[i:i+10]]
-            ws.send(json.dumps({"op": "subscribe", "args": batch}))
-            time.sleep(0.1)
-
-        send_discord_raw(f"✅ **Bot {BOT_NAME} (Bản WebSocket OI Real-time) đã chạy!** Đang theo dõi OI từng giây của nhóm **Binance Alpha** (Ngưỡng `> {MIN_OI_CHANGE_PCT}%`)...")
-
-        # Giữ kết nối WebSocket luôn sống bằng Ping mỗi 20 giây
-        def ping_loop():
-            while ws.sock and ws.sock.connected:
-                time.sleep(20)
-                try:
-                    ws.send(json.dumps({"op": "ping"}))
-                except Exception:
-                    break
-        threading.Thread(target=ping_loop, daemon=True).start()
-
-    def on_error(ws, error):
-        print(f"⚠️ Lỗi luồng WebSocket: {error}", flush=True)
-
-    def on_close(ws, close_status_code, close_msg):
-        print("🔄 Mất kết nối luồng OI, tự kết nối lại sau 5s...", flush=True)
-        time.sleep(5)
-        start_realtime_oi_stream()
-
-    ws = websocket.WebSocketApp(
-        ws_url,
-        on_open=on_open,
-        on_message=on_message,
-        on_error=on_error,
-        on_close=on_close
-    )
-    ws.run_forever()
-
-# Tính toán biến động OI thực tế sau mỗi 60 giây và gửi Top 3 về Discord
-def analyze_every_minute():
-    previous_snapshot = {}
-
-    while True:
-        time.sleep(60)
-        with data_lock:
-            current_snapshot = {
-                k: v.copy() for k, v in live_oi_data.items() 
-                if v["oi"] > 0 and v["price"] > 0
+    payload = {
+        "username": "Binance Alpha OI Radar",
+        "embeds": [
+            {
+                "title": "⚡ TOP 3 BINANCE ALPHA BIẾN ĐỘNG OI MẠNH NHẤT (5M)",
+                "description": f"Các đồng coin thuộc danh mục **Binance Alpha** có biến động Open Interest trên `{MIN_OI_CHANGE}%`.",
+                "color": 16766720,
+                "fields": fields,
+                "footer": {
+                    "text": "Dữ liệu tự động từ Binance Futures & Alpha"
+                }
             }
+        ]
+    }
 
-        if not current_snapshot:
-            continue
-
-        if not previous_snapshot:
-            previous_snapshot = current_snapshot
-            print(f"📊 Đã khóa mốc OI ban đầu cho {len(previous_snapshot)} đồng Alpha.", flush=True)
-            continue
-
-        changes = []
-        for sym, curr in current_snapshot.items():
-            prev = previous_snapshot.get(sym)
-            if prev and prev["oi"] > 0:
-                oi_pct = ((curr["oi"] - prev["oi"]) / prev["oi"]) * 100
-                price_pct = ((curr["price"] - prev["price"]) / prev["price"]) * 100 if prev["price"] > 0 else 0
-
-                if oi_pct > MIN_OI_CHANGE_PCT:
-                    changes.append({
-                        "symbol": sym,
-                        "oi_pct": oi_pct,
-                        "price_pct": price_pct,
-                        "oi_now": curr["oi"],
-                        "price_now": curr["price"]
-                    })
-
-        top_3 = sorted(changes, key=lambda x: x["oi_pct"], reverse=True)[:3]
-
-        if top_3:
-            message = f"**🔥 TOP 3 BINANCE ALPHA BIẾN ĐỘNG OI 1 PHÚT (> {MIN_OI_CHANGE_PCT}%):**\n\n"
-            for idx, item in enumerate(top_3, start=1):
-                sym = item["symbol"]
-                binance_link = f"https://binance.com{sym}"
-                icon = "🟢" if item["price_pct"] >= 0 else "🔴"
-                message += f"**{idx}. [{sym}]({binance_link})** {icon}\n"
-                message += f"• Biến động OI (1m): `{item['oi_pct']:+.4f}%`\n"
-                message += f"• Biến động Giá (1m): `{item['price_pct']:+.2f}%`\n"
-                message += f"• Giá hiện tại: `${item['price_now']}`\n\n"
-
-            send_discord_raw(message)
-            print(f"📨 Đã bắn Top {len(top_3)} kèo Alpha OI lên Discord!", flush=True)
+    try:
+        res = session.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+        if res.status_code in (200, 204):
+            print("[Thành công] Đã bắn thông báo về Discord!")
         else:
-            print(f"⏳ Chưa có đồng Alpha nào tăng OI > {MIN_OI_CHANGE_PCT}%.", flush=True)
+            print(f"[Lỗi] Discord từ chối nhận tin: {res.status_code} - {res.text}")
+    except Exception as e:
+        print(f"[Lỗi] Không thể kết nối tới Discord: {e}")
 
-        previous_snapshot = current_snapshot
+def main():
+    start_time = time.time()
+    print("1. Đang tải danh sách token Binance Alpha...")
+    alpha_tokens = get_binance_alpha_tokens()
+    if not alpha_tokens:
+        return
+
+    print("2. Đang đối chiếu với thị trường Binance Futures...")
+    futures_map = get_active_futures_symbols()
+    target_symbols = [futures_map[t] for t in alpha_tokens if t in futures_map]
+    print(f"-> Tìm thấy {len(target_symbols)} cặp Alpha đang mở Futures.")
+
+    if not target_symbols:
+        return
+
+    print("3. Đang quét dữ liệu OI khung 5 phút...")
+    results = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures_data = executor.map(check_oi_change, target_symbols)
+        for item in futures_data:
+            if item and item["abs_change_pct"] > MIN_OI_CHANGE:
+                results.append(item)
+
+    # Sắp xếp giảm dần theo mức độ biến động và lấy Top 3
+    results.sort(key=lambda x: x["abs_change_pct"], reverse=True)
+    top_3 = results[:3]
+
+    for c in top_3:
+        print(f"Top: {c['symbol']} | Biến động: {c['oi_change_pct']:.4f}% | OI: ${c['current_oi_usd']:,.2f}")
+
+    send_discord_notification(top_3)
+    print(f"Hoàn tất chu kỳ quét trong {time.time() - start_time:.2f} giây.")
 
 if __name__ == "__main__":
-    threading.Thread(target=start_web_server, daemon=True).start()
-    threading.Thread(target=start_realtime_oi_stream, daemon=True).start()
-    analyze_every_minute()
+    main()
