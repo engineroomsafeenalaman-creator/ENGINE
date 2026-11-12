@@ -106,8 +106,8 @@ def check_oi_change(args):
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) == 2:
-                prev_oi = float(data[0])
-                curr_oi = float(data[1])
+                prev_oi = float(data[0]["sumOpenInterestValue"])
+                curr_oi = float(data[1]["sumOpenInterestValue"])
                 if prev_oi > 0:
                     change_pct = ((curr_oi - prev_oi) / prev_oi) * 100
                     return {
