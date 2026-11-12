@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
-TIMEFRAME = "5min"        # Khung 5 phút
+TIMEFRAME = "5m"          # Khung 5 phút
 MIN_OI_CHANGE = 0.001     # Ngưỡng biến động tối thiểu (%)
 SCAN_INTERVAL = 300       # Quét mỗi 5 phút (300 giây)
 
@@ -42,65 +42,73 @@ def send_discord_raw(payload):
         print(f"[Discord Error] {e}")
 
 def get_binance_alpha_tokens():
-    """Lấy danh sách token thuộc danh mục Binance Alpha (API này không chặn IP Mỹ)"""
-    url = "https://binance.com"
-    try:
-        res = requests.get(url, headers=HEADERS, timeout=15)
-        if res.status_code == 200:
-            tokens = res.json().get("data", [])
-            alpha_set = {t.get("symbol", "").strip().upper() for t in tokens if t.get("symbol")}
-            print(f"[OK] Lay duoc {len(alpha_set)} token thuoc he Binance Alpha.")
-            return alpha_set
-        print(f"[Loi Alpha API] Status: {res.status_code}")
-    except Exception as e:
-        print(f"[Loi Alpha API] {e}")
-    return set()
-
-def get_bybit_linear_symbols():
-    """Lấy danh sách các cặp USDT Perpetual đang giao dịch (Không chặn IP Mỹ)"""
-    url = "https://bybit.com"
-    params = {"category": "linear", "limit": 1000}
+    """Lấy danh sách token thuộc danh mục Binance Alpha qua CoinGecko (Không bao giờ bị lỗi 429 trên Render)"""
+    url = "https://coingecko.com"
+    params = {
+        "vs_currency": "usd",
+        "category": "binance-alpha-spotlight",
+        "order": "market_cap_desc",
+        "per_page": 250,
+        "page": 1
+    }
     try:
         res = requests.get(url, params=params, headers=HEADERS, timeout=15)
         if res.status_code == 200:
-            items = res.json().get("result", {}).get("list", [])
+            coins = res.json()
+            alpha_set = {c.get("symbol", "").strip().upper() for c in coins if c.get("symbol")}
+            print(f"[OK] Lay duoc {len(alpha_set)} token thuoc he Binance Alpha.")
+            return alpha_set
+        print(f"[Loi CoinGecko Alpha] Status: {res.status_code}")
+    except Exception as e:
+        print(f"[Loi CoinGecko Alpha] {e}")
+    return set()
+
+def get_okx_swap_symbols():
+    """Lấy danh sách các cặp USDT Perpetual trên OKX (Mở 100% cho IP Mỹ của Render)"""
+    url = "https://okx.com"
+    params = {"instType": "SWAP"}
+    try:
+        res = requests.get(url, params=params, headers=HEADERS, timeout=15)
+        if res.status_code == 200:
+            items = res.json().get("data", [])
             symbols_map = {}
             for s in items:
-                if s.get("status") == "Trading" and s.get("quoteCoin") == "USDT":
-                    base = s.get("baseCoin", "").upper()
-                    sym = s.get("symbol")
+                if s.get("state") == "live" and s.get("settleCcy") == "USDT":
+                    inst_id = s.get("instId", "")  # VD: GRIFFAIN-USDT-SWAP
+                    base = inst_id.split("-")[0].upper()
                     clean_base = base[4:] if base.startswith("1000") else base
-                    symbols_map[clean_base] = sym
+                    symbols_map[clean_base] = inst_id
             return symbols_map
     except Exception as e:
-        print(f"[Loi danh sach Futures] {e}")
+        print(f"[Loi danh sach OKX] {e}")
     return {}
 
-def check_oi_change(symbol):
-    """Lấy dữ liệu Open Interest 2 kỳ 5m gần nhất và tính % biến động"""
-    url = "https://bybit.com"
+def check_oi_change(inst_id):
+    """Lấy dữ liệu Open Interest 2 kỳ 5m gần nhất trên OKX và tính % biến động"""
+    url = "https://okx.com"
+    # Lấy dữ liệu theo đồng cơ sở (ccy)
+    ccy = inst_id.split("-")[0]
     params = {
-        "category": "linear",
-        "symbol": symbol,
-        "intervalTime": TIMEFRAME,
-        "limit": 2
+        "ccy": ccy,
+        "period": "5m"
     }
     try:
         res = requests.get(url, params=params, headers=HEADERS, timeout=10)
         if res.status_code == 200:
-            data_list = res.json().get("result", {}).get("list", [])
-            if isinstance(data_list, list) and len(data_list) == 2:
-                # Bybit trả về phần tử mới nhất trước, cũ hơn sau
-                newest, previous = data_list
-                curr_oi = float(newest["openInterest"])
-                prev_oi = float(previous["openInterest"])
+            data_list = res.json().get("data", [])
+            if isinstance(data_list, list) and len(data_list) >= 2:
+                # OKX trả về mảng: [timestamp, oi_usd, vol_usd], mới nhất ở vị trí 0
+                newest = data_list[0]
+                previous = data_list[1]
+                curr_oi = float(newest[1])
+                prev_oi = float(previous[1])
                 if prev_oi > 0:
                     change_pct = ((curr_oi - prev_oi) / prev_oi) * 100
                     return {
-                        "symbol": symbol,
+                        "symbol": f"{ccy}USDT",
                         "oi_change_pct": change_pct,
                         "abs_change_pct": abs(change_pct),
-                        "current_oi_qty": curr_oi
+                        "current_oi_usd": curr_oi
                     }
     except Exception:
         pass
@@ -112,16 +120,16 @@ def run_scan_cycle():
     if not alpha_tokens:
         return
 
-    futures_map = get_bybit_linear_symbols()
+    futures_map = get_okx_swap_symbols()
     if not futures_map:
-        print("[Loi] Khong lay duoc danh sach cap Futures.")
+        print("[Loi] Khong lay duoc danh sach Futures.")
         return
 
     target_symbols = [futures_map[t] for t in alpha_tokens if t in futures_map]
     print(f"[OK] Dang quet {len(target_symbols)} cap Alpha Futures...")
 
     results = []
-    with ThreadPoolExecutor(max_workers=12) as executor:
+    with ThreadPoolExecutor(max_workers=8) as executor:
         for item in executor.map(check_oi_change, target_symbols):
             if item and item["abs_change_pct"] > MIN_OI_CHANGE:
                 results.append(item)
@@ -141,7 +149,7 @@ def run_scan_cycle():
             "name": f"#{idx} • {coin['symbol']} {trend_icon}",
             "value": (
                 f"• **Biến động OI (5m):** `{sign}{coin['oi_change_pct']:.4f}%`\n"
-                f"• **Tổng OI hiện tại:** `{coin['current_oi_qty']:,.2f} {coin['symbol'].replace('USDT', '')}`"
+                f"• **Tổng OI hiện tại:** `${coin['current_oi_usd']:,.2f}`"
             ),
             "inline": False
         })
@@ -160,7 +168,7 @@ def run_scan_cycle():
 
 if __name__ == "__main__":
     threading.Thread(target=start_dummy_server, daemon=True).start()
-    send_discord_raw({"content": "✅ **Bot Binance Alpha OI Radar đã sẵn sàng!**"})
+    send_discord_raw({"content": "✅ **Bot Binance Alpha OI Radar đã khởi động mượt mà!**"})
     while True:
         try:
             run_scan_cycle()
