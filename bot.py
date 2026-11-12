@@ -5,10 +5,13 @@ import time
 from flask import Flask
 import requests
 
-# Dán link Webhook Discord của bạn vào giữa 2 dấu ngoặc kép bên dưới
+# 👉 DÁN LINK WEBHOOK DISCORD CỦA BẠN VÀO GIỮA 2 DẤU NGOẶC KÉP BÊN DƯỚI:
 WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
-NGUONG_TY_LE_OI = 1.0001
+NGUONG_TY_LE_OI = 1.00001  # Tăng hơn 0.001% trong 1 phút
+CHU_KY_QUET_GIAY = 60  # Quét đúng 1 phút (60 giây) một lần
+SO_COIN_TOI_DA = 10  # Chỉ lấy Top 10 coin tăng mạnh nhất để tránh tràn tin nhắn
+
 TEN_SAN = "binance" + ".com"
 DOMAIN_WEB = "https://www." + TEN_SAN
 DOMAIN_FAPI = "https://fapi." + TEN_SAN
@@ -133,7 +136,6 @@ DANH_SACH_DU_PHONG = [
     "OBOLUSDT",
     "DOODUSDT",
     "OGUSDT",
-    "ZKJUSDT",
     "SKYAIUSDT",
     "NXPCUSDT",
     "CVCUSDT",
@@ -278,10 +280,8 @@ DANH_SACH_DU_PHONG = [
     "CLANKERUSDT",
     "BEATUSDT",
     "SENTUSDT",
-    "CROSSUSDT",
     "PLAYSOLANAUSDT",
     "METUSDT",
-    "BANKUSDT",
     "BOBUSDT",
 ]
 
@@ -295,8 +295,11 @@ def home():
 
 def gui_discord(noi_dung):
   try:
-    res = requests.post(WEBHOOK_URL, json={"content": noi_dung}, timeout=10)
-    print(f"Gửi Discord status: {res.status_code}", flush=True)
+    for i in range(0, len(noi_dung), 1900):
+      doan_tin = noi_dung[i : i + 1900]
+      res = requests.post(WEBHOOK_URL, json={"content": doan_tin}, timeout=10)
+      print(f"Gửi Discord status: {res.status_code}", flush=True)
+      time.sleep(0.5)
   except Exception as e:
     print(f"Lỗi gửi Discord: {e}", flush=True)
 
@@ -317,7 +320,6 @@ def lay_danh_sach_coin_alpha_futures():
     }
     print(f"Lấy được {len(alpha_symbols)} token Alpha", flush=True)
 
-    # Thử lấy danh sách từ Futures API
     res_prices = requests.get(
         DOMAIN_FAPI + "/fapi/v1/ticker/price", headers=HEADERS, timeout=10
     ).json()
@@ -333,7 +335,6 @@ def lay_danh_sach_coin_alpha_futures():
   except Exception as e:
     print(f"Chuyển sang dùng danh sách dự phòng do: {e}", flush=True)
 
-  # Nếu API bị chặn tạm thời thì dùng ngay danh sách cố định hơn 220 coin Alpha ở trên
   return list(set(DANH_SACH_DU_PHONG))
 
 
@@ -361,48 +362,46 @@ def quet_toan_bo_oi(danh_sach_coin):
 
 
 def chay_bot_canh_oi():
-  print("Bắt đầu khởi động luồng quét OI...", flush=True)
+  print("Bắt đầu khởi động luồng quét OI theo phút...", flush=True)
   danh_sach_alpha = lay_danh_sach_coin_alpha_futures()
-  print(f"✅ Đã sẵn sàng quét {len(danh_sach_alpha)} coin Alpha...", flush=True)
-
   gui_discord(
-      f"✅ Bot đã kết nối và đang quét **{len(danh_sach_alpha)}** coin Alpha!"
+      f"✅ Bot đã bật chế độ quét **1 phút/lần** cho **{len(danh_sach_alpha)}**"
+      " coin!"
   )
 
   oi_phut_truoc = quet_toan_bo_oi(danh_sach_alpha)
-  print(
-      f"Lần quét đầu tiên lấy được OI của {len(oi_phut_truoc)} coin.", flush=True
-  )
-  coin_dang_theo_doi_giam = set()
 
   while True:
-    time.sleep(60)
+    time.sleep(CHU_KY_QUET_GIAY)
     oi_hien_tai = quet_toan_bo_oi(danh_sach_alpha)
 
     if not oi_hien_tai:
-      print("⚠️ IP dùng chung trên Render đang tạm giới hạn, đợi chu kỳ sau...", flush=True)
+      print("⚠️ Đang bị giới hạn request, đợi phút sau...", flush=True)
       continue
 
-    coin_tang = []
-    coin_giam = []
+    danh_sach_tang = []
 
     for sym, oi_moi in oi_hien_tai.items():
       oi_cu = oi_phut_truoc.get(sym)
       if not oi_cu or oi_cu == 0:
         continue
 
-      if (oi_moi / oi_cu) >= NGUONG_TY_LE_OI:
-        coin_dang_theo_doi_giam.add(sym)
-        coin_tang.append(f"{sym} (+{((oi_moi / oi_cu) - 1) * 100:.2f}%)")
-      elif sym in coin_dang_theo_doi_giam and oi_moi < oi_cu:
-        coin_dang_theo_doi_giam.remove(sym)
-        coin_giam.append(f"{sym} ({((oi_moi / oi_cu) - 1) * 100:.2f}%)")
+      ty_le = oi_moi / oi_cu
+      if ty_le >= NGUONG_TY_LE_OI:
+        phan_tram = (ty_le - 1) * 100
+        danh_sach_tang.append((phan_tram, sym))
 
-    if coin_tang:
-      gui_discord("🚀 **OI Tăng mạnh:** " + ", ".join(coin_tang))
+    danh_sach_tang.sort(reverse=True)
+    top_coin = danh_sach_tang[:SO_COIN_TOI_DA]
 
-    if coin_giam:
-      gui_discord("📉 **OI Quay đầu giảm:** " + ", ".join(coin_giam))
+    if top_coin:
+      noi_dung_bao = [f"**{sym}** (+{pt:.4f}%)" for pt, sym in top_coin]
+      tong_so = len(danh_sach_tang)
+      gui_discord(
+          f"⏱️ **Top tăng OI trong 1 phút qua** (Tổng {tong_so} coin vượt"
+          " ngưỡng):\n"
+          + ", ".join(noi_dung_bao)
+      )
 
     oi_phut_truoc = oi_hien_tai
 
