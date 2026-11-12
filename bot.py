@@ -9,7 +9,7 @@ from requests.adapters import HTTPAdapter
 # ==========================================
 # 1. CAU HINH BOT (DAN LINK DISCORD O DONG DUOI)
 # ==========================================
-WEBHOOK_URL = "DAN_LINK_WEBHOOK_DISCORD_CUA_BAN_VAO_DAY"
+WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
 NGUONG_TY_LE_OI = 1.0001
 CHU_KY_QUET_GIAY = 30
