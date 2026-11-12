@@ -37,7 +37,6 @@ HEADERS = {
     "Referer": "https://www.binance.com/"
 }
 
-
 # ==========================================
 # 2. LOGGING
 # ==========================================
@@ -80,35 +79,50 @@ def home():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "healthy"})
-
+    return jsonify({
+        "status": "healthy"
+    })
 
 # ==========================================
 # 5. BINANCE REQUEST HANDLER
 # ==========================================
 
 def get_json(url, params=None, timeout=15):
+
     global api_block_until
     global next_request_time
 
     for attempt in range(2):
+
         with api_lock:
+
             now = time.monotonic()
 
             if now < api_block_until:
-                log.warning("Binance API is in cooldown")
+
+                remaining = api_block_until - now
+
+                log.warning(
+                    "Binance cooldown: %.0f seconds remaining",
+                    remaining
+                )
+
                 return None
 
             wait = next_request_time - now
+
             if wait > 0:
                 time.sleep(wait)
 
             if time.monotonic() < api_block_until:
                 return None
 
-            next_request_time = time.monotonic() + REQUEST_INTERVAL
+            next_request_time = (
+                time.monotonic() + REQUEST_INTERVAL
+            )
 
         try:
+
             response = requests.get(
                 url,
                 params=params,
@@ -116,8 +130,13 @@ def get_json(url, params=None, timeout=15):
                 timeout=timeout
             )
 
+            # Rate limit handling
+
             if response.status_code in (418, 429):
-                retry_after = response.headers.get("Retry-After")
+
+                retry_after = response.headers.get(
+                    "Retry-After"
+                )
 
                 log.error(
                     "Binance HTTP %s | Retry-After: %s",
@@ -127,73 +146,31 @@ def get_json(url, params=None, timeout=15):
 
                 try:
                     delay = float(retry_after)
+
                 except (TypeError, ValueError):
-                    delay = 900 if response.status_code == 418 else 60
+                    delay = (
+                        900 if response.status_code == 418
+                        else 60
+                    )
 
                 delay = max(delay, 60)
 
                 with api_lock:
+
                     api_block_until = max(
                         api_block_until,
                         time.monotonic() + delay
                     )
 
-                return None
-
-            if response.status_code in (403, 451):
-                log.error(
-                    "Binance access restricted: HTTP %s",
-                    response.status_code
-                )
-                return None
-
-            response.raise_for_status()
-            return response.json()
-
-        except requests.RequestException as e:
-            log.warning(
-                "Request attempt %s failed: %s",
-                attempt + 1,
-                e
-            )
-
-        except ValueError as e:
-            log.error("Invalid JSON response: %s", e)
-            return None
-
-        if attempt == 0:
-            time.sleep(3)
-
-    return None
-
-        retry_after = response.headers.get(
-                    "Retry-After"
-         )
-
-                try:
-                    delay = float(retry_after)
-                except (TypeError, ValueError):
-                    delay = (
-                        300 if response.status_code == 418
-                        else 60
-                    )
-
-                delay = min(max(delay, 60), 900)
-
-                with api_lock:
-                    api_block_until = max(
-                        api_block_until,
-                        time.monotonic() + delay
-                    )
-
-                log.error(
-                    "Binance HTTP %s. Pausing API %.0f seconds",
-                    response.status_code,
+                log.warning(
+                    "Binance requests paused for %.0f seconds",
                     delay
                 )
 
                 return None
 
+            # Access restriction
+
             if response.status_code in (403, 451):
 
                 log.error(
@@ -217,14 +194,17 @@ def get_json(url, params=None, timeout=15):
 
         except ValueError as e:
 
-            log.error("Invalid JSON response: %s", e)
+            log.error(
+                "Invalid JSON response: %s",
+                e
+            )
+
             return None
 
         if attempt == 0:
             time.sleep(3)
 
     return None
-
 
 # ==========================================
 # 6. BINANCE ALPHA TOKEN LIST
@@ -270,6 +250,7 @@ def get_binance_alpha_tokens():
         data = response.json()
 
         if not isinstance(data, dict):
+
             log.error("Alpha response is not a JSON object")
             return None
 
@@ -320,9 +301,13 @@ def get_binance_alpha_tokens():
             symbol = item.get("symbol")
 
             if isinstance(symbol, str) and symbol.strip():
-                symbols.add(symbol.strip().upper())
+
+                symbols.add(
+                    symbol.strip().upper()
+                )
 
         if not symbols:
+
             log.error("Alpha token list is empty")
             return None
 
@@ -336,8 +321,9 @@ def get_binance_alpha_tokens():
     except Exception:
 
         log.exception("ALPHA TOKEN REQUEST FAILED")
-        return None
-        # ==========================================
+        return Non
+
+# ==========================================
 # 7. LOAD BINANCE FUTURES SYMBOLS
 # ==========================================
 
@@ -373,6 +359,7 @@ def get_active_futures_symbols():
                 futures_map[base] = symbol
 
                 if base.startswith("1000") and len(base) > 4:
+
                     futures_map[base[4:]] = symbol
 
     log.info(
@@ -422,7 +409,6 @@ def get_target_symbols():
 
     return targets
 
-
 # ==========================================
 # 9. FETCH OPEN INTEREST
 # ==========================================
@@ -439,9 +425,13 @@ def fetch_single_oi(symbol):
         return symbol, None
 
     try:
-        return symbol, float(data["openInterest"])
+
+        return symbol, float(
+            data["openInterest"]
+        )
 
     except (KeyError, TypeError, ValueError):
+
         return symbol, None
 
 
@@ -469,6 +459,7 @@ def snapshot_all_oi(symbols):
                 symbol, oi = future.result()
 
                 if oi is not None and oi >= 0:
+
                     snapshot[symbol] = oi
 
             except Exception:
@@ -496,7 +487,6 @@ def snapshot_all_oi(symbols):
         return None
 
     return snapshot
-
 
 # ==========================================
 # 11. GET MARK PRICES
@@ -527,6 +517,7 @@ def get_all_mark_prices():
                 prices[symbol] = price
 
         except (KeyError, TypeError, ValueError):
+
             continue
 
     log.info(
@@ -585,7 +576,8 @@ def calculate_results(before, after, prices):
     )
 
     return results
-    # ==========================================
+
+# ==========================================
 # 13. SEND DISCORD NOTIFICATION
 # ==========================================
 
@@ -612,13 +604,17 @@ def send_discord_notification(coins):
             )
 
             if now - last >= COIN_COOLDOWN:
+
                 eligible.append(coin)
 
         eligible = eligible[:TOP_N]
 
         if not eligible:
 
-            log.info("No coins eligible for Discord alert")
+            log.info(
+                "No coins eligible for Discord alert"
+            )
+
             return False
 
         fields = []
@@ -641,7 +637,9 @@ def send_discord_notification(coins):
 
             fields.append({
 
-                "name": f"#{idx} {coin['symbol']} {icon}",
+                "name": (
+                    f"#{idx} {coin['symbol']} {icon}"
+                ),
 
                 "value": (
 
@@ -734,10 +732,11 @@ def send_discord_notification(coins):
 
         except requests.RequestException:
 
-            log.exception("Discord request failed")
+            log.exception(
+                "Discord request failed"
+            )
 
         return False
-
 
 # ==========================================
 # 14. MAIN SCANNER
@@ -765,7 +764,10 @@ def main():
     )
 
     if not DISCORD_WEBHOOK_URL:
-        log.error("DISCORD_WEBHOOK_URL is missing")
+
+        log.error(
+            "DISCORD_WEBHOOK_URL is missing"
+        )
 
     # Load initial Alpha Futures list
 
@@ -777,11 +779,17 @@ def main():
 
         if not targets:
 
-            log.error(
-                "Initialization failed. Retry in 60 seconds"
+            remaining = max(
+                60,
+                api_block_until - time.monotonic()
             )
 
-            time.sleep(60)
+            log.error(
+                "Initialization failed. Retry in %.0f seconds",
+                remaining
+            )
+
+            time.sleep(remaining)
 
     # Initial OI snapshot
 
@@ -793,13 +801,24 @@ def main():
 
         if before is None:
 
-            log.warning(
-                "Initial snapshot failed. Retry in 60 seconds"
+            remaining = max(
+                60,
+                api_block_until - time.monotonic()
             )
 
-            time.sleep(60)
+            log.warning(
+                "Initial snapshot failed. Retry in %.0f seconds",
+                remaining
+            )
+
+            time.sleep(remaining)
 
     last_refresh = time.monotonic()
+
+    log.info(
+        "INITIAL SNAPSHOT READY: %s symbols",
+        len(before)
+    )
 
     # Continuous scanning
 
@@ -832,9 +851,11 @@ def main():
                         targets = new_targets
                         before = new_snapshot
 
-                        log.info("Targets refreshed")
+                        log.info(
+                            "Targets refreshed"
+                        )
 
-                last_refresh = cycle_start
+                last_refresh = time.monotonic()
 
             # Wait until approximately 60 seconds
             # after the previous cycle started
@@ -867,7 +888,7 @@ def main():
 
                 continue
 
-            # Get mark prices
+            # Get Mark Prices
 
             prices = get_all_mark_prices()
 
@@ -880,7 +901,7 @@ def main():
                 before = after
                 continue
 
-            # Calculate changes
+            # Calculate OI changes
 
             results = calculate_results(
                 before,
