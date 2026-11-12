@@ -166,9 +166,9 @@ def get_json(url, params=None, timeout=15):
 
     return None
 
-                retry_after = response.headers.get(
+        retry_after = response.headers.get(
                     "Retry-After"
-                )
+         )
 
                 try:
                     delay = float(retry_after)
