@@ -9,8 +9,7 @@ from requests.adapters import HTTPAdapter
 # ==========================================
 # 1. CẤU HÌNH BOT
 # ==========================================
-# Dán trực tiếp link Webhook của bạn vào trong dấu ngoặc kép bên dưới:
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN")
+WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
 NGUONG_TY_LE_OI = 1.0001  # Tăng > 0.01%
 CHU_KY_QUET_GIAY = 30
@@ -96,6 +95,8 @@ session.headers.update({
 
 executor = ThreadPoolExecutor(max_workers=SO_LUONG_SONG_SONG)
 rate_limit_event = threading.Event()
+_bot_started = False
+_start_lock = threading.Lock()
 
 
 def get_base_url():
@@ -106,11 +107,6 @@ def switch_base_url():
     global current_ep_idx
     current_ep_idx += 1
     return get_base_url()
-
-
-@app.route("/")
-def home():
-    return f"Bot canh OI Binance Futures ({CHU_KY_QUET_GIAY}s) dang chay tren {get_base_url()}!"
 
 
 def format_usd(value):
@@ -205,7 +201,7 @@ def chay_bot_canh_oi():
     if not ok:
         gui_discord(
             f"🚨 **BINANCE TỪ CHỐI KẾT NỐI:**\n{thong_bao}\n\n"
-            "👉 *IP Server có thể đang bị Binance chặn vùng (US/Cloud).*"
+            "👉 *IP Server Render (Mỹ) đang bị Binance chặn (451). Hãy đổi Region sang Singapore!*"
         )
         return
 
@@ -262,3 +258,6 @@ def chay_bot_canh_oi():
         if bien_dong:
             bien_dong.sort(key=lambda x: x["phan_tram_oi"], reverse=True)
             top_coins = bien_dong[:SO_COIN_TOI_DA]
+
+            dong_tin = [f"🔥 **BIẾN ĐỘNG OI ({CHU_KY_QUET_GIAY}s)** | Quét mất `{time.time() - t0:.2f}s`"]
+            for idx, c in enumerate(top_coins, 1):
