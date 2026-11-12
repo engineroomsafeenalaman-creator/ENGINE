@@ -125,9 +125,9 @@ def get_json(url, params=None, timeout=15):
 
             if response.status_code in (418, 429):
 
-                retry_after = response.headers.get(
+                    retry_after = response.headers.get(
                     "Retry-After"
-                )
+                    )
 
                 log.error(
                     "Binance HTTP %s | Retry-After: %s",
