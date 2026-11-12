@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 
 # Cấu hình biến môi trường (Cài đặt trong tab Environment của Render)
-DISCORD_WEBHOOK_URL = os.environ.get("https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN")
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 TIMEFRAME = "5m"          # Khung thời gian 5 phút
 MIN_OI_CHANGE = 0.001     # Ngưỡng biến động tối thiểu (%)
 SCAN_INTERVAL = 300       # Chu kỳ quét: 300 giây = 5 phút
