@@ -14,7 +14,7 @@ WEBHOOK_URL = os.environ.get(
 )
 
 NGUONG_TY_LE_OI = 1.0001  # 1.0001 = 0.01% (Mức test độ mượt)
-CHU_KY_QUET_GIAY = 60  # Quét chuẩn mỗi 60 giây
+CHU_KY_QUET_GIAY = 30  # Quét chuẩn mỗi 30 giây
 SO_COIN_TOI_DA = 5  # In ra Top 5 coin tăng mạnh nhất
 
 # Danh sách 264 coin Alpha
