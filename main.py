@@ -1,13 +1,12 @@
 import os
 import time
-import random
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from concurrent.futures import ThreadPoolExecutor
 import requests
 
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
-PROXY_URL = "http://cpethehk:viqqd5yyfxwr@64.137.10.153:5803/"
+PROXY_URL = "http://64.137.10"
 TIMEFRAME = "5m"
 MIN_OI_CHANGE = 0.001
 SCAN_INTERVAL = 300
@@ -17,6 +16,7 @@ HEADERS = {
     "Accept": "application/json"
 }
 
+PROXIES = {"http": PROXY_URL.strip(), "https": PROXY_URL.strip()} if PROXY_URL else None
 FAPI_BASE = "https://binance.com"
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -24,6 +24,9 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"OK")
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
     def log_message(self, format, *args):
         pass
 
@@ -33,64 +36,19 @@ def start_dummy_server():
     server.serve_forever()
 
 def send_discord_raw(payload):
-    if not DISCORD_WEBHOOK_URL:
+    if not DISCORD_WEBHOOK_URL or "DAN_LINK" in DISCORD_WEBHOOK_URL:
+        print("[LOI] Ban chua dan link Webhook Discord vao bien DISCORD_WEBHOOK_URL!")
         return
     try:
-        requests.post(DISCORD_WEBHOOK_URL.strip(), json=payload, timeout=15)
+        res = requests.post(DISCORD_WEBHOOK_URL.strip(), json=payload, timeout=15)
+        print(f"[Discord Status] Ma phan hoi: {res.status_code}")
     except Exception as e:
         print(f"[Discord Error] {e}")
 
-def get_working_proxy():
-    """Tự động tìm proxy sạch (ngoài Mỹ/Singapore bị chặn) để truy cập Binance Futures"""
-    # 1. Thử kết nối trực tiếp trước
-    try:
-        res = requests.get(f"{FAPI_BASE}/fapi/v1/ping", headers=HEADERS, timeout=5)
-        if res.status_code == 200:
-            print("[OK] Kết nối trực tiếp thành công!")
-            return None
-    except Exception:
-        pass
-
-    # 2. Nếu bị chặn IP (451), tự động tải danh sách proxy công khai và lọc proxy sống
-    print("[Info] IP trực tiếp bị chặn, đang tìm Proxy sạch...")
-    proxy_sources = [
-        "https://proxyscrape.com",
-        "https://githubusercontent.com"
-    ]
-    candidates = []
-    for src in proxy_sources:
-        try:
-            r = requests.get(src, timeout=10)
-            if r.status_code == 200:
-                lines = [line.strip() for line in r.text.splitlines() if ":" in line]
-                candidates.extend(lines[:80])
-        except Exception:
-            continue
-
-    random.shuffle(candidates)
-
-    def test_proxy(proxy_ip):
-        proxies = {"http": f"http://{proxy_ip}", "https": f"http://{proxy_ip}"}
-        try:
-            r = requests.get(f"{FAPI_BASE}/fapi/v1/ping", headers=HEADERS, proxies=proxies, timeout=4)
-            if r.status_code == 200:
-                return proxies
-        except Exception:
-            pass
-        return None
-
-    with ThreadPoolExecutor(max_workers=20) as executor:
-        for valid_proxy in executor.map(test_proxy, candidates[:100]):
-            if valid_proxy:
-                print(f"[OK] Đã tìm thấy Proxy sạch: {valid_proxy['http']}")
-                return valid_proxy
-
-    return "FAILED"
-
-def get_binance_alpha_tokens(proxies):
+def get_binance_alpha_tokens():
     url = "https://binance.com"
     try:
-        res = requests.get(url, headers=HEADERS, proxies=proxies, timeout=15)
+        res = requests.get(url, headers=HEADERS, proxies=PROXIES, timeout=15)
         if res.status_code == 200:
             tokens = res.json().get("data", [])
             return {t.get("symbol", "").strip().upper() for t in tokens if t.get("symbol")}
@@ -98,17 +56,17 @@ def get_binance_alpha_tokens(proxies):
         print(f"[Loi Alpha API] {e}")
     return set()
 
-def check_oi_change(args):
-    symbol, proxies = args
+def check_oi_change(symbol):
     url = f"{FAPI_BASE}/futures/data/openInterestHist"
     params = {"symbol": symbol, "period": TIMEFRAME, "limit": 2}
     try:
-        res = requests.get(url, params=params, headers=HEADERS, proxies=proxies, timeout=8)
+        res = requests.get(url, params=params, headers=HEADERS, proxies=PROXIES, timeout=10)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) == 2:
-                prev_oi = float(data[0]["sumOpenInterestValue"])
-                curr_oi = float(data[1]["sumOpenInterestValue"])
+                first_candle, second_candle = data
+                prev_oi = float(first_candle["sumOpenInterestValue"])
+                curr_oi = float(second_candle["sumOpenInterestValue"])
                 if prev_oi > 0:
                     change_pct = ((curr_oi - prev_oi) / prev_oi) * 100
                     return {
@@ -122,22 +80,18 @@ def check_oi_change(args):
     return None
 
 def run_scan_cycle():
-    print("--- Bắt đầu quét Binance Alpha OI (5m) ---")
-    proxies = get_working_proxy()
-    if proxies == "FAILED":
-        print("[Cảnh báo] Chưa tìm được proxy phù hợp ở chu kỳ này, sẽ thử lại sau 5 phút.")
-        return
-
+    print("--- Bat dau quet Binance Alpha OI (5m) qua Proxy ---")
     try:
-        res = requests.get(f"{FAPI_BASE}/fapi/v1/exchangeInfo", headers=HEADERS, proxies=proxies, timeout=12)
+        res = requests.get(f"{FAPI_BASE}/fapi/v1/exchangeInfo", headers=HEADERS, proxies=PROXIES, timeout=12)
         if res.status_code != 200:
+            print(f"[Loi Binance Futures] Ma loi: {res.status_code} (Proxy nay dang o My, hay doi sang Proxy chau Au)")
             return
         exchange_data = res.json()
     except Exception as e:
-        print(f"[Loi ExchangeInfo] {e}")
+        print(f"[Loi ket noi Proxy] {e}")
         return
 
-    alpha_tokens = get_binance_alpha_tokens(proxies)
+    alpha_tokens = get_binance_alpha_tokens()
     if not alpha_tokens:
         return
 
@@ -149,8 +103,8 @@ def run_scan_cycle():
             clean_base = base[4:] if base.startswith("1000") else base
             futures_map[clean_base] = symbol
 
-    target_symbols = [(futures_map[t], proxies) for t in alpha_tokens if t in futures_map]
-    print(f"Đang quét {len(target_symbols)} cặp Alpha Futures...")
+    target_symbols = [futures_map[t] for t in alpha_tokens if t in futures_map]
+    print(f"[OK] Dang quet {len(target_symbols)} cap Alpha Futures...")
 
     results = []
     with ThreadPoolExecutor(max_workers=10) as executor:
@@ -162,7 +116,7 @@ def run_scan_cycle():
     top_3 = results[:3]
 
     if not top_3:
-        print("Không có đồng Alpha nào biến động OI > 0.001%.")
+        print("[Ket qua] Khong co dong Alpha nao bien dong OI > 0.001%.")
         return
 
     fields = []
@@ -192,6 +146,7 @@ def run_scan_cycle():
 
 if __name__ == "__main__":
     threading.Thread(target=start_dummy_server, daemon=True).start()
+    send_discord_raw({"content": "✅ **Bot Binance Alpha OI Radar đã kết nối thành công với Discord!**"})
     while True:
         try:
             run_scan_cycle()
