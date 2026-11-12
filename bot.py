@@ -1,9 +1,11 @@
 import concurrent.futures
+import json
 import os
 import threading
 import time
 from flask import Flask
 import requests
+import websocket
 
 # Dán link Webhook Discord của bạn vào giữa 2 dấu ngoặc kép bên dưới
 WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
@@ -11,6 +13,7 @@ WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB0
 NGUONG_TY_LE_OI = 1.00005
 DOMAIN_WEB = "https://www." + "binance.com"
 DOMAIN_FAPI = "https://fapi." + "binance.com"
+WS_FAPI = "wss://fstream." + "://binance.com"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 app = Flask(__name__)
@@ -31,7 +34,7 @@ def gui_discord(noi_dung):
 
 def lay_danh_sach_coin_alpha_futures():
   try:
-    # 1. Lấy danh sách token Alpha
+    # 1. Lấy 663 token Alpha từ cổng web
     path_alpha = (
         "/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
     )
@@ -46,22 +49,21 @@ def lay_danh_sach_coin_alpha_futures():
     }
     print(f"Lấy được {len(alpha_symbols)} token Alpha", flush=True)
 
-    # 2. Dùng trực tiếp biến DOMAIN_WEB đã tạo ở trên để lấy danh sách Futures
-    path_static = "/bapi/futures/v1/public/future/common/brackets"
-    res_static = requests.get(
-        DOMAIN_WEB + path_static, headers=HEADERS, timeout=15
-    ).json()
+    # 2. Hứng 1 nhịp WebSocket trực tiếp từ Futures (0% bị chặn IP) để lấy toàn bộ mã coin
+    ws = websocket.create_connection(WS_FAPI, timeout=15)
+    raw_msg = ws.recv()
+    ws.close()
 
+    tickers = json.loads(raw_msg)
     danh_sach = []
-    if res_static.get("data") and res_static["data"].get("brackets"):
-      for item in res_static["data"]["brackets"]:
-        sym = item.get("symbol", "")
-        if sym.endswith("USDT") and sym[:-4] in alpha_symbols:
-          danh_sach.append(sym)
+    for item in tickers:
+      sym = item.get("s", "")  # Mã cặp giao dịch, ví dụ: AIXBTUSDT
+      if sym.endswith("USDT") and sym[:-4] in alpha_symbols:
+        danh_sach.append(sym)
 
     return danh_sach
   except Exception as e:
-    print(f"Lỗi lấy danh sách coin: {e}", flush=True)
+    print(f"Lỗi lấy danh sách qua WebSocket: {e}", flush=True)
     return []
 
 
