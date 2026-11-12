@@ -12,7 +12,7 @@ WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB0
 
 NGUONG_TY_LE_OI = 1.00001  # 1.00001 = 0.001% | 1.005 = 0.5% | 1.01 = 1%
 NGHI_SAU_MOI_VONG_GIAY = 30  # Thời gian nghỉ sau khi quét xong 100% danh sách
-SO_COIN_TOI_DA = 10  # Lấy Top 10 coin tăng mạnh nhất
+SO_COIN_TOI_DA = 5  # Lấy Top 5 coin tăng mạnh nhất
 
 TEN_SAN = "binance" + ".com"
 DOMAIN_WEB = "https://www." + TEN_SAN
