@@ -1,4 +1,3 @@
-import concurrent.futures
 import os
 import socket
 import threading
@@ -12,7 +11,7 @@ import requests
 WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
 NGUONG_TY_LE_OI = 1.00001  # 1.00001 = 0.001% | 1.005 = 0.5% | 1.01 = 1%
-CHU_KY_QUET_GIAY = 30  # Thời gian nghỉ giữa các lần quét (giây)
+NGHI_SAU_MOI_VONG_GIAY = 30  # Thời gian nghỉ sau khi quét xong 100% danh sách
 SO_COIN_TOI_DA = 10  # Lấy Top 10 coin tăng mạnh nhất
 
 TEN_SAN = "binance" + ".com"
@@ -100,7 +99,20 @@ def gui_discord(noi_dung):
     print(f"Loi gui Discord: {e}", flush=True)
 
 
-def lay_danh_sach_coin_alpha_futures():
+def lay_danh_sach_coin_chuan():
+  # Bước 1: Chỉ tốn 1 request duy nhất để lấy toàn bộ coin ĐANG MỞ GIAO DỊCH trên Binance Futures
+  coin_dang_mo_futures = set()
+  try:
+    res_info = requests.get(
+        DOMAIN_FAPI + "/fapi/v1/exchangeInfo", headers=HEADERS, timeout=15
+    ).json()
+    for s in res_info.get("symbols", []):
+      if s.get("status") == "TRADING" and s.get("quoteAsset") == "USDT":
+        coin_dang_mo_futures.add(s["symbol"])
+  except Exception as e:
+    print(f"Khong lay duoc exchangeInfo: {e}", flush=True)
+
+  # Bước 2: Lấy danh sách token Alpha từ Binance
   try:
     path_alpha = (
         "/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
@@ -108,114 +120,92 @@ def lay_danh_sach_coin_alpha_futures():
     res_alpha = requests.get(
         DOMAIN_WEB + path_alpha, headers=HEADERS, timeout=15
     ).json()
-
     alpha_symbols = {
         item.get("symbol", "").upper()
         for item in res_alpha.get("data", [])
         if item.get("symbol")
     }
+    if alpha_symbols and coin_dang_mo_futures:
+      ds = sorted(
+          [sym for sym in coin_dang_mo_futures if sym[:-4] in alpha_symbols]
+      )
+      if ds:
+        return ds
+  except Exception:
+    pass
 
-    res_prices = requests.get(
-        DOMAIN_FAPI + "/fapi/v1/ticker/price", headers=HEADERS, timeout=10
-    ).json()
-
-    if isinstance(res_prices, list) and len(res_prices) > 0:
-      danh_sach = [
-          item["symbol"]
-          for item in res_prices
-          if item.get("symbol", "").endswith("USDT")
-          and item["symbol"][:-4] in alpha_symbols
-      ]
-      if danh_sach:
-        return danh_sach
-  except Exception as e:
-    print(f"Dung danh sach du phong do loi API: {e}", flush=True)
+  # Nếu API Alpha bị chặn thì lọc danh sách 264 coin dự phòng qua những mã thực sự đang TRADING
+  if coin_dang_mo_futures:
+    return sorted([c for c in DANH_SACH_DU_PHONG if c in coin_dang_mo_futures])
 
   return DANH_SACH_DU_PHONG
 
 
-def lay_oi_1_coin(symbol):
-  url = DOMAIN_FAPI + f"/fapi/v1/openInterest?symbol={symbol}"
-  try:
-    # Nghỉ nhẹ 0.25s mỗi request để tránh vượt Rate Limit của Binance
-    time.sleep(0.25)
-    res = requests.get(url, headers=HEADERS, timeout=6)
-    if res.status_code == 200:
-      data = res.json()
-      return symbol, float(data["openInterest"]), 200
-    return symbol, None, res.status_code
-  except Exception:
-    return symbol, None, 0
-
-
-def quet_toan_bo_oi(danh_sach_coin):
+def quet_du_100_phan_tram_oi(danh_sach_coin):
   ket_qua = {}
-  ma_loi_gap = set()
-  coin_loi_symbol = set()
+  idx = 0
+  tong = len(danh_sach_coin)
 
-  # Dùng 2 luồng + nghỉ 0.25s = ~8 request/giây (an toàn tuyệt đối với Binance)
-  with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-    futures = [executor.submit(lay_oi_1_coin, sym) for sym in danh_sach_coin]
-    for f in concurrent.futures.as_completed(futures):
-      sym, oi, status = f.result()
-      if status == 200 and oi is not None and oi > 0:
-        ket_qua[sym] = oi
-      elif status == 400:
-        # Coin không tồn tại hoặc đã hủy niêm yết trên Futures
-        coin_loi_symbol.add(sym)
-      elif status != 200:
-        ma_loi_gap.add(status)
+  while idx < tong:
+    sym = danh_sach_coin[idx]
+    url = DOMAIN_FAPI + f"/fapi/v1/openInterest?symbol={sym}"
+    try:
+      res = requests.get(url, headers=HEADERS, timeout=8)
+      if res.status_code == 200:
+        data = res.json()
+        oi = float(data["openInterest"])
+        if oi > 0:
+          ket_qua[sym] = oi
+        idx += 1
+        time.sleep(0.35)  # Nhịp độ đều đặn ~3 request/giây
+      elif res.status_code in (418, 429):
+        # Bị giới hạn tốc độ -> đọc thời gian phạt của Binance và chờ hết phạt rồi quét tiếp đúng mã này
+        cho_giay = int(res.headers.get("Retry-After", 15))
+        print(
+            f"Tam nghi {cho_giay}s do gioi han toc do tai coin thu"
+            f" {idx}/{tong}...",
+            flush=True,
+        )
+        time.sleep(cho_giay + 1)
+      else:
+        # Lỗi khác (ví dụ mã không hỗ trợ OI) -> bỏ qua sang mã tiếp theo
+        idx += 1
+    except Exception:
+      time.sleep(2)
+      idx += 1
 
-  return ket_qua, ma_loi_gap, coin_loi_symbol
+  return ket_qua
 
 
 def chay_bot_canh_oi():
-  print("Dang khoi dong Bot canh OI...", flush=True)
-  danh_sach_alpha = lay_danh_sach_coin_alpha_futures()
+  print("Dang khoi dong Bot quet 100% danh sach...", flush=True)
+  danh_sach_alpha = lay_danh_sach_coin_chuan()
 
-  oi_phut_truoc, ma_loi, coin_loi = quet_toan_bo_oi(danh_sach_alpha)
+  gui_discord(
+      f"⏳ Đang khởi tạo dữ liệu lần đầu cho **{len(danh_sach_alpha)}** coin"
+      " hợp lệ trên Futures (vui lòng đợi khoảng 1–2 phút)..."
+  )
 
-  # Tự động loại bỏ các coin đã bị hủy niêm yết để lần sau quét nhanh hơn
-  if coin_loi:
-    danh_sach_alpha = [c for c in danh_sach_alpha if c not in coin_loi]
+  oi_vong_truoc = quet_du_100_phan_tram_oi(danh_sach_alpha)
 
-  if not oi_phut_truoc:
-    gui_discord(
-        f"⚠️ **Canh bao:** Bot da bat nhung KHONG lay duoc du lieu Binance (Ma"
-        f" loi: {ma_loi})."
-    )
-  else:
-    nguong_pt = (NGUONG_TY_LE_OI - 1) * 100
-    gui_discord(
-        f"✅ **Bot da ket noi!** Quet"
-        f" **{len(oi_phut_truoc)}/{len(danh_sach_alpha)}** coin hop le | Chu"
-        f" ky **{CHU_KY_QUET_GIAY}s** | Nguong **+{nguong_pt:.4f}%**"
-    )
-
-  da_bao_loi = False
+  nguong_pt = (NGUONG_TY_LE_OI - 1) * 100
+  ds_ten = ", ".join(sorted(oi_vong_truoc.keys()))
+  gui_discord(
+      f"✅ **Hoàn tất khởi tạo!** Đã quét đủ"
+      f" **{len(oi_vong_truoc)}/{len(danh_sach_alpha)}** coin | Ngưỡng"
+      f" **+{nguong_pt:.4f}%**\n📋 **Danh sách đầy đủ:** {ds_ten}"
+  )
 
   while True:
-    time.sleep(CHU_KY_QUET_GIAY)
-    oi_hien_tai, ma_loi, _ = quet_toan_bo_oi(danh_sach_alpha)
+    time.sleep(NGHI_SAU_MOI_VONG_GIAY)
+    oi_hien_tai = quet_du_100_phan_tram_oi(danh_sach_alpha)
 
     if not oi_hien_tai:
-      print(f"Khong lay duoc OI. Ma loi: {ma_loi}", flush=True)
-      if not da_bao_loi:
-        gui_discord(
-            f"🚫 **Loi lay du lieu Binance** (Ma loi: `{ma_loi}`). Dang thu lai..."
-        )
-        da_bao_loi = True
-      continue
-
-    da_bao_loi = False
-
-    if not oi_phut_truoc:
-      oi_phut_truoc = oi_hien_tai
       continue
 
     danh_sach_tang = []
     for sym, oi_moi in oi_hien_tai.items():
-      oi_cu = oi_phut_truoc.get(sym)
+      oi_cu = oi_vong_truoc.get(sym)
       if not oi_cu or oi_cu == 0:
         continue
 
@@ -230,12 +220,12 @@ def chay_bot_canh_oi():
     if top_coin:
       noi_dung_bao = [f"**{sym}** (+{pt:.4f}%)" for pt, sym in top_coin]
       gui_discord(
-          f"⏱️ **Top tang OI ({CHU_KY_QUET_GIAY}s)** (Tong {len(danh_sach_tang)}"
-          " coin):\n"
+          f"⏱️ **Top tăng OI** (Quét đủ {len(oi_hien_tai)} coin | Tổng"
+          f" {len(danh_sach_tang)} mã vượt ngưỡng):\n"
           + ", ".join(noi_dung_bao)
       )
 
-    oi_phut_truoc = oi_hien_tai
+    oi_vong_truoc = oi_hien_tai
 
 
 def khoi_dong_an_toan():
