@@ -125,6 +125,29 @@ def get_json(url, params=None, timeout=15):
 
             if response.status_code in (418, 429):
 
+    retry_after = response.headers.get("Retry-After")
+
+    log.error(
+        "Binance HTTP %s | Retry-After: %s",
+        response.status_code,
+        retry_after or "Not provided"
+    )
+
+    try:
+        delay = float(retry_after)
+    except (TypeError, ValueError):
+        delay = 900 if response.status_code == 418 else 60
+
+    delay = max(delay, 60)
+
+    with api_lock:
+        api_block_until = max(
+            api_block_until,
+            time.monotonic() + delay
+        )
+
+    return None
+
                 retry_after = response.headers.get(
                     "Retry-After"
                 )
