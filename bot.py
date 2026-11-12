@@ -7,11 +7,11 @@ import requests
 from requests.adapters import HTTPAdapter
 
 # ==========================================
-# 1. CẤU HÌNH BOT (DÁN LINK DISCORD Ở DÒNG DƯỚI)
+# 1. CAU HINH BOT (DAN LINK DISCORD O DONG DUOI)
 # ==========================================
 WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
-NGUONG_TY_LE_OI = 1.0001  # Tăng > 0.01%
+NGUONG_TY_LE_OI = 1.0001
 CHU_KY_QUET_GIAY = 30
 SO_COIN_TOI_DA = 5
 SO_LUONG_SONG_SONG = 10
@@ -196,7 +196,10 @@ def lay_toan_bo_du_lieu_binance(danh_sach_hop_le):
 def chay_bot_canh_oi():
     ok, thong_bao = kiem_tra_ket_noi_binance()
     if not ok:
-        gui_discord(f"🚨 **BINANCE TU CHOI KET NOI:**\n{thong_bao}\n\n👉 *IP Server Render dang bi Binance chan (451). Hay doi Region sang Singapore!*")
+        gui_discord(
+            f"**BINANCE TU CHOI KET NOI:**\n{thong_bao}\n\n"
+            "*IP Server Render dang bi Binance chan (451). Hay doi Region sang Singapore!*"
+        )
         return
 
     t0 = time.time()
@@ -204,7 +207,12 @@ def chay_bot_canh_oi():
     toc_do = time.time() - t0
     danh_sach_ton_tai = set(du_lieu_truoc.keys())
 
-    gui_discord(f"✅ **Bot Canh OI Khoi Dong Thanh Cong!**\n• Endpoint: `{get_base_url()}`\n• Theo doi: **{len(danh_sach_ton_tai)}/{len(DANH_SACH_ALPHA)}** coin\n• Toc do quet: **{toc_do:.2f}s**")
+    gui_discord(
+        f"**Bot Canh OI Khoi Dong Thanh Cong!**\n"
+        f"- Endpoint: `{get_base_url()}`\n"
+        f"- Theo doi: **{len(danh_sach_ton_tai)}/{len(DANH_SACH_ALPHA)}** coin\n"
+        f"- Toc do quet: **{toc_do:.2f}s**"
+    )
 
     while True:
         thoi_gian_cho = max(1.0, CHU_KY_QUET_GIAY - (time.time() - t0))
@@ -215,7 +223,7 @@ def chay_bot_canh_oi():
 
         if rate_limit_event.is_set():
             new_ep = switch_base_url()
-            print(f"⚠️ Dinh Rate Limit! Chuyen sang {new_ep} va nghi 60s...", flush=True)
+            print(f"Dinh Rate Limit! Chuyen sang {new_ep} va nghi 60s...", flush=True)
             time.sleep(60)
             continue
 
@@ -245,5 +253,5 @@ def chay_bot_canh_oi():
         if bien_dong:
             bien_dong.sort(key=lambda x: x["phan_tram_oi"], reverse=True)
             top_coins = bien_dong[:SO_COIN_TOI_DA]
-            dong_tin = [f"🔥 **BIEN DONG OI ({CHU_KY_QUET_GIAY}s)** | Quet mat `{time.time() - t0:.2f}s`"]
+            dong_tin = [f"**BIEN DONG OI ({CHU_KY_QUET_GIAY}s)** | Quet mat `{time.time() - t0:.2f}s`"]
             for idx, c in enumerate(top_coins, 1):
