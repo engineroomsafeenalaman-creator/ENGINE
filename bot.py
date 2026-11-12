@@ -8,7 +8,7 @@ import requests
 # Dán link Webhook Discord của bạn vào giữa 2 dấu ngoặc kép bên dưới
 WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
-NGUONG_TY_LE_OI = 1.3
+NGUONG_TY_LE_OI = 1.12
 TEN_SAN = "binance" + ".com"
 DOMAIN_WEB = "https://www." + TEN_SAN
 DOMAIN_FAPI = "https://fapi." + TEN_SAN
