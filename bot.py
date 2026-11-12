@@ -376,7 +376,7 @@ def chay_bot_canh_oi():
   coin_dang_theo_doi_giam = set()
 
   while True:
-    time.sleep(60)
+    time.sleep(30)
     oi_hien_tai = quet_toan_bo_oi(danh_sach_alpha)
 
     if not oi_hien_tai:
