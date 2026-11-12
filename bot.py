@@ -17,10 +17,10 @@ SO_COIN_TOI_DA = 5
 SO_LUONG_SONG_SONG = 10
 
 BINANCE_ENDPOINTS = [
-    "https://fapi.binance.com",
-    "https://fapi1.binance.com",
-    "https://fapi2.binance.com",
-    "https://fapi3.binance.com",
+    "https://binance.com",
+    "https://binance.com",
+    "https://binance.com",
+    "https://binance.com",
 ]
 current_ep_idx = 0
 
@@ -241,7 +241,6 @@ def chay_bot_canh_oi():
             top_coins = bien_dong[:SO_COIN_TOI_DA]
 
             lines = [f"**CANH BAO OI TANG DOT BIEN ({CHU_KY_QUET_GIAY}s):**"]
-            # Da sua loi thut le (IndentationError) o vong lap nay:
             for idx, c in enumerate(top_coins, 1):
                 lines.append(
                     f"{idx}. **{c['sym']}** | OI: **+{c['phan_tram_oi']:.2f}%** ({format_usd(c['oi_usd'])}) "
@@ -253,10 +252,10 @@ def chay_bot_canh_oi():
 
 
 def khoi_dong_bot_ngam():
-global _bot_started
-with _start_lock:
-if not _bot_started:
-_bot_started = True
+    global _bot_started
+    with _start_lock:
+        if not _bot_started:
+            _bot_started = True
 t = threading.Thread(target=chay_bot_canh_oi, daemon=True)
 t.start()
 @app.route("/")
