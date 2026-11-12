@@ -5,7 +5,7 @@ import time
 from flask import Flask
 import requests
 
-# Dán đường link Webhook Discord của bạn vào giữa 2 dấu ngoặc kép bên dưới
+# Dán link Webhook mới nhất của bot ENGINE 3 vào giữa 2 dấu ngoặc kép
 WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
 NGUONG_TY_LE_OI = 1.00005
@@ -23,36 +23,42 @@ def home():
 
 def gui_discord(noi_dung):
   try:
-    requests.post(WEBHOOK_URL, json={"content": noi_dung}, timeout=10)
+    res = requests.post(WEBHOOK_URL, json={"content": noi_dung}, timeout=10)
+    print(f"Gửi Discord status: {res.status_code}", flush=True)
   except Exception as e:
-    print(f"Lỗi gửi Discord: {e}")
+    print(f"Lỗi gửi Discord: {e}", flush=True)
 
 
 def lay_danh_sach_coin_alpha_futures():
-  path_alpha = (
-      "/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
-  )
-  res_alpha = requests.get(
-      DOMAIN_WEB + path_alpha, headers=HEADERS, timeout=15
-  ).json()
+  try:
+    path_alpha = (
+        "/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
+    )
+    res_alpha = requests.get(
+        DOMAIN_WEB + path_alpha, headers=HEADERS, timeout=15
+    ).json()
 
-  alpha_symbols = {
-      item.get("symbol", "").upper()
-      for item in res_alpha.get("data", [])
-      if item.get("symbol")
-  }
+    alpha_symbols = {
+        item.get("symbol", "").upper()
+        for item in res_alpha.get("data", [])
+        if item.get("symbol")
+    }
+    print(f"Lấy được {len(alpha_symbols)} token Alpha", flush=True)
 
-  res_prices = requests.get(
-      DOMAIN_FAPI + "/fapi/v1/ticker/price", headers=HEADERS, timeout=15
-  ).json()
+    res_prices = requests.get(
+        DOMAIN_FAPI + "/fapi/v1/ticker/price", headers=HEADERS, timeout=15
+    ).json()
 
-  danh_sach = []
-  if isinstance(res_prices, list):
-    for item in res_prices:
-      sym = item.get("symbol", "")
-      if sym.endswith("USDT") and sym[:-4] in alpha_symbols:
-        danh_sach.append(sym)
-  return danh_sach
+    danh_sach = []
+    if isinstance(res_prices, list):
+      for item in res_prices:
+        sym = item.get("symbol", "")
+        if sym.endswith("USDT") and sym[:-4] in alpha_symbols:
+          danh_sach.append(sym)
+    return danh_sach
+  except Exception as e:
+    print(f"Lỗi lấy danh sách coin: {e}", flush=True)
+    return []
 
 
 def lay_oi_1_coin(symbol):
@@ -76,8 +82,17 @@ def quet_toan_bo_oi(danh_sach_coin):
 
 
 def chay_bot_canh_oi():
+  print("Bắt đầu khởi động luồng quét OI...", flush=True)
   danh_sach_alpha = lay_danh_sach_coin_alpha_futures()
-  print(f"✅ Đã sẵn sàng quét {len(danh_sach_alpha)} coin Alpha...")
+  print(f"✅ Đã sẵn sàng quét {len(danh_sach_alpha)} coin Alpha...", flush=True)
+
+  # Gửi 1 tin ngắn xác nhận kết nối Discord thông suốt
+  gui_discord(
+      f"✅ Bot đã kết nối và đang quét **{len(danh_sach_alpha)}** coin Alpha!"
+  )
+
+  if not danh_sach_alpha:
+    return
 
   oi_phut_truoc = quet_toan_bo_oi(danh_sach_alpha)
   coin_dang_theo_doi_giam = set()
