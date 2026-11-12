@@ -9,21 +9,21 @@ from requests.adapters import HTTPAdapter
 # ==========================================
 # 1. CẤU HÌNH BOT
 # ==========================================
-WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
+# Dán trực tiếp link Webhook của bạn vào trong dấu ngoặc kép bên dưới:
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN")
 
 NGUONG_TY_LE_OI = 1.0001  # Tăng > 0.01%
 CHU_KY_QUET_GIAY = 30
 SO_COIN_TOI_DA = 5
-SO_LUONG_SONG_SONG = 15
+SO_LUONG_SONG_SONG = 10
 
-# Endpoint chính thức và dự phòng của Binance Futures
 BINANCE_ENDPOINTS = [
-    "https://fapi.binance.com",
-    "https://fapi1.binance.com",
-    "https://fapi2.binance.com",
-    "https://fapi3.binance.com",
+    "https://binance.com",
+    "https://binance.com",
+    "https://binance.com",
+    "https://binance.com",
 ]
-ACTIVE_BASE_URL = BINANCE_ENDPOINTS[0]
+current_ep_idx = 0
 
 DANH_SACH_ALPHA = {
     "AIXBTUSDT", "ZKJUSDT", "ARCUSDT", "GRIFFAINUSDT", "SWARMSUSDT",
@@ -83,7 +83,6 @@ DANH_SACH_ALPHA = {
 
 app = Flask(__name__)
 
-# Khởi tạo Session và Pool tái sử dụng xuyên suốt vòng đời app
 session = requests.Session()
 adapter = HTTPAdapter(
     pool_connections=SO_LUONG_SONG_SONG + 5,
@@ -91,21 +90,27 @@ adapter = HTTPAdapter(
 )
 session.mount("https://", adapter)
 session.headers.update({
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "application/json",
 })
 
-# Tạo sẵn ThreadPoolExecutor dùng chung
 executor = ThreadPoolExecutor(max_workers=SO_LUONG_SONG_SONG)
 rate_limit_event = threading.Event()
 
 
+def get_base_url():
+    return BINANCE_ENDPOINTS[current_ep_idx % len(BINANCE_ENDPOINTS)]
+
+
+def switch_base_url():
+    global current_ep_idx
+    current_ep_idx += 1
+    return get_base_url()
+
+
 @app.route("/")
 def home():
-    return "Bot canh OI Binance Futures (30s) dang chay!"
+    return f"Bot canh OI Binance Futures ({CHU_KY_QUET_GIAY}s) dang chay tren {get_base_url()}!"
 
 
 def format_usd(value):
@@ -134,28 +139,27 @@ def gui_discord(noi_dung):
 
 
 def kiem_tra_ket_noi_binance():
-    global ACTIVE_BASE_URL
     chi_tiet_loi = []
-    for ep in BINANCE_ENDPOINTS:
+    for _ in range(len(BINANCE_ENDPOINTS)):
+        ep = get_base_url()
         try:
-            r = session.get(f"{ep}/fapi/v1/ticker/price?symbol=BTCUSDT", timeout=6)
+            r = session.get(f"{ep}/fapi/v1/ticker/price?symbol=BTCUSDT", timeout=5)
             if r.status_code == 200:
-                ACTIVE_BASE_URL = ep
                 return True, f"Kết nối thành công tới `{ep}`"
             chi_tiet_loi.append(f"`{ep}` -> HTTP **{r.status_code}**")
         except Exception as e:
             chi_tiet_loi.append(f"`{ep}` -> Lỗi: {str(e)[:40]}")
+        switch_base_url()
     return False, "\n".join(chi_tiet_loi)
 
 
-def lay_1_oi_binance(sym):
-    # Nếu đang bị dính Rate Limit thì bỏ qua ngay các luồng còn lại
+def lay_1_oi_binance(sym, base_url):
     if rate_limit_event.is_set():
         return sym, 0.0
 
-    url = f"{ACTIVE_BASE_URL}/fapi/v1/openInterest?symbol={sym}"
+    url = f"{base_url}/fapi/v1/openInterest?symbol={sym}"
     try:
-        res = session.get(url, timeout=5)
+        res = session.get(url, timeout=4)
         if res.status_code == 200:
             return sym, float(res.json().get("openInterest", 0))
         if res.status_code in (418, 429):
@@ -169,9 +173,10 @@ def lay_toan_bo_du_lieu_binance(danh_sach_hop_le):
     ket_qua = {}
     gia_map = {}
     rate_limit_event.clear()
+    base_url = get_base_url()
 
     try:
-        res_gia = session.get(f"{ACTIVE_BASE_URL}/fapi/v1/ticker/price", timeout=8)
+        res_gia = session.get(f"{base_url}/fapi/v1/ticker/price", timeout=6)
         if res_gia.status_code == 200:
             for item in res_gia.json():
                 sym = item.get("symbol", "")
@@ -181,10 +186,11 @@ def lay_toan_bo_du_lieu_binance(danh_sach_hop_le):
             rate_limit_event.set()
             return ket_qua
     except Exception as e:
-        print(f"Loi lay gia: {e}", flush=True)
+        print(f"Loi lay gia ({base_url}): {e}", flush=True)
+        switch_base_url()
         return ket_qua
 
-    futures = {executor.submit(lay_1_oi_binance, sym): sym for sym in gia_map}
+    futures = [executor.submit(lay_1_oi_binance, sym, base_url) for sym in gia_map]
     for future in as_completed(futures):
         sym, oi = future.result()
         gia = gia_map.get(sym, 0)
@@ -207,51 +213,52 @@ def chay_bot_canh_oi():
     du_lieu_truoc = lay_toan_bo_du_lieu_binance(DANH_SACH_ALPHA)
     toc_do = time.time() - t0
 
-    danh_sach_ton_tai = set(du_lieu_truoc.keys()) if du_lieu_truoc else DANH_SACH_ALPHA
-    nguong_pt = (NGUONG_TY_LE_OI - 1) * 100
+    danh_sach_ton_tai = set(du_lieu_truoc.keys())
 
     gui_discord(
-        f"✅ **Bot Binance Futures đã kết nối!** ({thong_bao})\n"
-        f"📊 Tìm thấy **{len(du_lieu_truoc)}/{len(DANH_SACH_ALPHA)}** coin Alpha trong **{toc_do:.2f}s**\n"
-        f"⏱️ Chu kỳ: **{CHU_KY_QUET_GIAY}s** | 🎯 Ngưỡng cảnh báo: **+{nguong_pt:.3f}%**"
+        f"✅ **Bot Canh OI Khởi Động Thành Công!**\n"
+        f"• Endpoint: `{get_base_url()}`\n"
+        f"• Theo dõi: **{len(danh_sach_ton_tai)}/{len(DANH_SACH_ALPHA)}** coin hợp lệ\n"
+        f"• Tốc độ quét khởi tạo: **{toc_do:.2f}s**"
     )
 
     while True:
-        thoi_gian_ngu = max(1.0, CHU_KY_QUET_GIAY - toc_do)
-        time.sleep(thoi_gian_ngu)
+        thoi_gian_cho = max(1.0, CHU_KY_QUET_GIAY - (time.time() - t0))
+        time.sleep(thoi_gian_cho)
 
-        t_quet = time.time()
+        t0 = time.time()
         du_lieu_moi = lay_toan_bo_du_lieu_binance(danh_sach_ton_tai)
-        toc_do = time.time() - t_quet
 
-        # Xử lý khi bị Rate Limit
         if rate_limit_event.is_set():
-            print("⚠️ Dinh Rate Limit Binance, nghi 60s...", flush=True)
+            new_ep = switch_base_url()
+            print(f"⚠️ Dính Rate Limit! Chuyển sang {new_ep} và tạm nghỉ 60s...", flush=True)
             time.sleep(60)
             continue
 
-        if not du_lieu_moi or not du_lieu_truoc:
-            if du_lieu_moi:
-                du_lieu_truoc = du_lieu_moi
+        if not du_lieu_moi:
             continue
 
-        danh_sach_tang = []
-        for sym, info_moi in du_lieu_moi.items():
-            info_cu = du_lieu_truoc.get(sym)
-            if not info_cu or info_cu["oi"] <= 0:
+        bien_dong = []
+        for sym, moi in du_lieu_moi.items():
+            truoc = du_lieu_truoc.get(sym)
+            if not truoc or truoc["oi"] <= 0:
                 continue
 
-            ty_le_oi = info_moi["oi"] / info_cu["oi"]
+            ty_le_oi = moi["oi"] / truoc["oi"]
             if ty_le_oi >= NGUONG_TY_LE_OI:
-                pt_oi = (ty_le_oi - 1) * 100
-                pt_gia = ((info_moi["gia"] / info_cu["gia"]) - 1) * 100
-                chenh_usd = info_moi["oi_usd"] - info_cu["oi_usd"]
+                phan_tram_oi = (ty_le_oi - 1) * 100
+                phan_tram_gia = ((moi["gia"] / truoc["gia"]) - 1) * 100
+                chenh_lech_usd = moi["oi_usd"] - truoc["oi_usd"]
 
-                danh_sach_tang.append({
+                bien_dong.append({
                     "sym": sym,
-                    "pt_oi": pt_oi,
-                    "pt_gia": pt_gia,
-                    "gia": info_moi["gia"],
-                    "oi_usd": info_moi["oi_usd"],
-                    "chenh_usd": chenh_usd,
+                    "phan_tram_oi": phan_tram_oi,
+                    "phan_tram_gia": phan_tram_gia,
+                    "oi_usd": moi["oi_usd"],
+                    "chenh_lech_usd": chenh_lech_usd,
+                    "gia": moi["gia"],
                 })
+
+        if bien_dong:
+            bien_dong.sort(key=lambda x: x["phan_tram_oi"], reverse=True)
+            top_coins = bien_dong[:SO_COIN_TOI_DA]
