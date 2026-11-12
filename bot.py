@@ -11,9 +11,12 @@ import websocket
 WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
 NGUONG_TY_LE_OI = 1.00005
-DOMAIN_WEB = "https://www." + "binance.com"
-DOMAIN_FAPI = "https://fapi." + "binance.com"
-WS_FAPI = "wss://fstream." + "://binance.com"
+
+# Tách rời từng mảnh tên miền để trình duyệt KHÔNG BAO GIỜ tự sửa link khi copy-paste
+TEN_SAN = "binance" + ".com"
+DOMAIN_WEB = "https://www." + TEN_SAN
+DOMAIN_FAPI = "https://fapi." + TEN_SAN
+WS_FAPI = "wss://fstream." + TEN_SAN + "/ws/!miniTicker@arr"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 app = Flask(__name__)
@@ -34,7 +37,7 @@ def gui_discord(noi_dung):
 
 def lay_danh_sach_coin_alpha_futures():
   try:
-    # 1. Lấy 663 token Alpha từ cổng web
+    # 1. Lấy danh sách token Alpha
     path_alpha = (
         "/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
     )
@@ -49,7 +52,7 @@ def lay_danh_sach_coin_alpha_futures():
     }
     print(f"Lấy được {len(alpha_symbols)} token Alpha", flush=True)
 
-    # 2. Hứng 1 nhịp WebSocket trực tiếp từ Futures (0% bị chặn IP) để lấy toàn bộ mã coin
+    # 2. Hứng 1 nhịp WebSocket trực tiếp từ Futures (0% bị chặn IP)
     ws = websocket.create_connection(WS_FAPI, timeout=15)
     raw_msg = ws.recv()
     ws.close()
@@ -57,7 +60,7 @@ def lay_danh_sach_coin_alpha_futures():
     tickers = json.loads(raw_msg)
     danh_sach = []
     for item in tickers:
-      sym = item.get("s", "")  # Mã cặp giao dịch, ví dụ: AIXBTUSDT
+      sym = item.get("s", "")
       if sym.endswith("USDT") and sym[:-4] in alpha_symbols:
         danh_sach.append(sym)
 
