@@ -16,11 +16,12 @@ CHU_KY_QUET_GIAY = 30
 SO_COIN_TOI_DA = 5
 SO_LUONG_SONG_SONG = 10
 
+# Su dung dung domain Futures API (fapi) cua Binance
 BINANCE_ENDPOINTS = [
-    "https://binance.com",
-    "https://binance.com",
-    "https://binance.com",
-    "https://binance.com",
+    "https://fapi.binance.com",
+    "https://fapi1.binance.com",
+    "https://fapi2.binance.com",
+    "https://fapi3.binance.com",
 ]
 current_ep_idx = 0
 
@@ -205,64 +206,76 @@ def chay_bot_canh_oi():
     t0 = time.time()
     du_lieu_truoc = lay_toan_bo_du_lieu_binance(DANH_SACH_ALPHA)
     toc_do = time.time() - t0
-    danh_sach_ton_tai = set(du_lieu_truoc.keys())
-
     gui_discord(
         f"**BOT CANH OI DA KHOI DONG!**\n"
         f"{thong_bao}\n"
-        f"Dang theo doi **{len(danh_sach_ton_tai)}** coin (Quet mat {toc_do:.2f}s)"
+        f"Da tai du lieu **{len(du_lieu_truoc)}** coin trong `{toc_do:.2f}s`."
     )
 
     while True:
         time.sleep(CHU_KY_QUET_GIAY)
-        du_lieu_hien_tai = lay_toan_bo_du_lieu_binance(danh_sach_ton_tai)
-        if not du_lieu_hien_tai:
+        if rate_limit_event.is_set():
+            print("Bi gioi han Rate Limit (429/418), tam nghi 60s...", flush=True)
+            time.sleep(60)
+            switch_base_url()
+
+        du_lieu_sau = lay_toan_bo_du_lieu_binance(DANH_SACH_ALPHA)
+        if not du_lieu_sau:
             continue
 
         bien_dong = []
-        for sym, cur in du_lieu_hien_tai.items():
-            prev = du_lieu_truoc.get(sym)
-            if prev and prev["oi"] > 0:
-                ty_le_oi = cur["oi"] / prev["oi"]
-                if ty_le_oi >= NGUONG_TY_LE_OI:
-                    phan_tram_oi = (ty_le_oi - 1) * 100
-                    phan_tram_gia = ((cur["gia"] / prev["gia"]) - 1) * 100
-                    bien_dong.append({
-                        "sym": sym,
-                        "ty_le_oi": ty_le_oi,
-                        "phan_tram_oi": phan_tram_oi,
-                        "phan_tram_gia": phan_tram_gia,
-                        "oi_usd": cur["oi_usd"],
-                        "gia": cur["gia"],
-                    })
+        for sym, sau in du_lieu_sau.items():
+            truoc = du_lieu_truoc.get(sym)
+            if not truoc or truoc["oi"] <= 0:
+                continue
+
+            ty_le_oi = sau["oi"] / truoc["oi"]
+            if ty_le_oi >= NGUONG_TY_LE_OI:
+                phan_tram_oi = (ty_le_oi - 1) * 100
+                phan_tram_gia = ((sau["gia"] - truoc["gia"]) / truoc["gia"]) * 100
+                bien_dong.append({
+                    "sym": sym,
+                    "phan_tram_oi": phan_tram_oi,
+                    "phan_tram_gia": phan_tram_gia,
+                    "oi_usd": sau["oi_usd"],
+                    "gia": sau["gia"],
+                })
 
         if bien_dong:
             bien_dong.sort(key=lambda x: x["phan_tram_oi"], reverse=True)
-            top_coins = bien_dong[:SO_COIN_TOI_DA]
-
-            lines = [f"**CANH BAO OI TANG DOT BIEN ({CHU_KY_QUET_GIAY}s):**"]
-            for idx, c in enumerate(top_coins, 1):
-                lines.append(
-                    f"{idx}. **{c['sym']}** | OI: **+{c['phan_tram_oi']:.2f}%** ({format_usd(c['oi_usd'])}) "
-                    f"| Gia: `{c['gia']}` ({c['phan_tram_gia']:+.2f}%)"
+            top_coin = bien_dong[:SO_COIN_TOI_DA]
+            dong_tin = [f"**BIEN DONG OI MANH ({CHU_KY_QUET_GIAY}s qua):**"]
+            for c in top_coin:
+                dong_tin.append(
+                    f"- **{c['sym']}**: OI `+{c['phan_tram_oi']:.2f}%` ({format_usd(c['oi_usd'])}) | "
+                    f"Gia: `{c['gia']}` (`{c['phan_tram_gia']:+.2f}%`)"
                 )
-            gui_discord("\n".join(lines))
+gui_discord("\n".join(dong_tin))
+du_lieu_truoc = du_lieu_sau
 
-        du_lieu_truoc = du_lieu_hien_tai
+==========================================
 
+
+KHOI DONG BOT NGAM VA WEB SERVER GIU SONG RENDER
+
+
+==========================================
 
 def khoi_dong_bot_ngam():
-    global _bot_started
-    with _start_lock:
-        if not _bot_started:
-            _bot_started = True
+global _bot_started
+with _start_lock:
+if not _bot_started:
+_bot_started = True
 t = threading.Thread(target=chay_bot_canh_oi, daemon=True)
 t.start()
 @app.route("/")
 def health_check():
 khoi_dong_bot_ngam()
-return "Bot canh OI dang hoat dong!", 200
-if name == "main":
+return "Bot Canh OI dang hoat dong!", 200
+
+Tu dong khoi chay luong bot ngay khi import file (ho tro ca python bot.py lan gunicorn)
+
 khoi_dong_bot_ngam()
+if name == "main":
 port = int(os.environ.get("PORT", 10000))
 app.run(host="0.0.0.0", port=port)
