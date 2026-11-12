@@ -7,7 +7,7 @@ import requests
 from requests.adapters import HTTPAdapter
 
 # ==========================================
-# 1. CẤU HÌNH BOT
+# 1. CẤU HÌNH BOT (DÁN LINK DISCORD Ở DÒNG DƯỚI)
 # ==========================================
 WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
@@ -83,10 +83,7 @@ DANH_SACH_ALPHA = {
 app = Flask(__name__)
 
 session = requests.Session()
-adapter = HTTPAdapter(
-    pool_connections=SO_LUONG_SONG_SONG + 5,
-    pool_maxsize=SO_LUONG_SONG_SONG + 5,
-)
+adapter = HTTPAdapter(pool_connections=SO_LUONG_SONG_SONG + 5, pool_maxsize=SO_LUONG_SONG_SONG + 5)
 session.mount("https://", adapter)
 session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
@@ -118,17 +115,18 @@ def format_usd(value):
 
 
 def gui_discord(noi_dung):
-    if not WEBHOOK_URL or "://discord.com" not in WEBHOOK_URL:
+    url = os.environ.get("WEBHOOK_URL", "") or WEBHOOK_URL
+    if not url or "://discord.com" not in url:
         print(f"[CONSOLE]:\n{noi_dung}\n", flush=True)
         return
     try:
         for i in range(0, len(noi_dung), 1900):
             doan_tin = noi_dung[i : i + 1900]
-            res = session.post(WEBHOOK_URL, json={"content": doan_tin}, timeout=10)
+            res = session.post(url, json={"content": doan_tin}, timeout=10)
             if res.status_code == 429:
                 retry_after = float(res.json().get("retry_after", 2))
                 time.sleep(retry_after)
-                session.post(WEBHOOK_URL, json={"content": doan_tin}, timeout=10)
+                session.post(url, json={"content": doan_tin}, timeout=10)
             time.sleep(0.3)
     except Exception as e:
         print(f"Loi gui Discord: {e}", flush=True)
@@ -141,10 +139,10 @@ def kiem_tra_ket_noi_binance():
         try:
             r = session.get(f"{ep}/fapi/v1/ticker/price?symbol=BTCUSDT", timeout=5)
             if r.status_code == 200:
-                return True, f"Kết nối thành công tới `{ep}`"
+                return True, f"Ket noi thanh cong toi `{ep}`"
             chi_tiet_loi.append(f"`{ep}` -> HTTP **{r.status_code}**")
         except Exception as e:
-            chi_tiet_loi.append(f"`{ep}` -> Lỗi: {str(e)[:40]}")
+            chi_tiet_loi.append(f"`{ep}` -> Loi: {str(e)[:40]}")
         switch_base_url()
     return False, "\n".join(chi_tiet_loi)
 
@@ -152,7 +150,6 @@ def kiem_tra_ket_noi_binance():
 def lay_1_oi_binance(sym, base_url):
     if rate_limit_event.is_set():
         return sym, 0.0
-
     url = f"{base_url}/fapi/v1/openInterest?symbol={sym}"
     try:
         res = session.get(url, timeout=4)
@@ -199,24 +196,15 @@ def lay_toan_bo_du_lieu_binance(danh_sach_hop_le):
 def chay_bot_canh_oi():
     ok, thong_bao = kiem_tra_ket_noi_binance()
     if not ok:
-        gui_discord(
-            f"🚨 **BINANCE TỪ CHỐI KẾT NỐI:**\n{thong_bao}\n\n"
-            "👉 *IP Server Render (Mỹ) đang bị Binance chặn (451). Hãy đổi Region sang Singapore!*"
-        )
+        gui_discord(f"🚨 **BINANCE TU CHOI KET NOI:**\n{thong_bao}\n\n👉 *IP Server Render dang bi Binance chan (451). Hay doi Region sang Singapore!*")
         return
 
     t0 = time.time()
     du_lieu_truoc = lay_toan_bo_du_lieu_binance(DANH_SACH_ALPHA)
     toc_do = time.time() - t0
-
     danh_sach_ton_tai = set(du_lieu_truoc.keys())
 
-    gui_discord(
-        f"✅ **Bot Canh OI Khởi Động Thành Công!**\n"
-        f"• Endpoint: `{get_base_url()}`\n"
-        f"• Theo dõi: **{len(danh_sach_ton_tai)}/{len(DANH_SACH_ALPHA)}** coin hợp lệ\n"
-        f"• Tốc độ quét khởi tạo: **{toc_do:.2f}s**"
-    )
+    gui_discord(f"✅ **Bot Canh OI Khoi Dong Thanh Cong!**\n• Endpoint: `{get_base_url()}`\n• Theo doi: **{len(danh_sach_ton_tai)}/{len(DANH_SACH_ALPHA)}** coin\n• Toc do quet: **{toc_do:.2f}s**")
 
     while True:
         thoi_gian_cho = max(1.0, CHU_KY_QUET_GIAY - (time.time() - t0))
@@ -227,7 +215,7 @@ def chay_bot_canh_oi():
 
         if rate_limit_event.is_set():
             new_ep = switch_base_url()
-            print(f"⚠️ Dính Rate Limit! Chuyển sang {new_ep} và tạm nghỉ 60s...", flush=True)
+            print(f"⚠️ Dinh Rate Limit! Chuyen sang {new_ep} va nghi 60s...", flush=True)
             time.sleep(60)
             continue
 
@@ -245,7 +233,6 @@ def chay_bot_canh_oi():
                 phan_tram_oi = (ty_le_oi - 1) * 100
                 phan_tram_gia = ((moi["gia"] / truoc["gia"]) - 1) * 100
                 chenh_lech_usd = moi["oi_usd"] - truoc["oi_usd"]
-
                 bien_dong.append({
                     "sym": sym,
                     "phan_tram_oi": phan_tram_oi,
@@ -258,6 +245,5 @@ def chay_bot_canh_oi():
         if bien_dong:
             bien_dong.sort(key=lambda x: x["phan_tram_oi"], reverse=True)
             top_coins = bien_dong[:SO_COIN_TOI_DA]
-
-            dong_tin = [f"🔥 **BIẾN ĐỘNG OI ({CHU_KY_QUET_GIAY}s)** | Quét mất `{time.time() - t0:.2f}s`"]
+            dong_tin = [f"🔥 **BIEN DONG OI ({CHU_KY_QUET_GIAY}s)** | Quet mat `{time.time() - t0:.2f}s`"]
             for idx, c in enumerate(top_coins, 1):
