@@ -11,7 +11,7 @@ WEBHOOK_URL = os.environ.get(
     "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN",
 )
 
-NGUONG_TY_LE_OI = 1.021
+NGUONG_TY_LE_OI = 1.0001
 TEN_SAN = "binance" + ".com"
 DOMAIN_WEB = "https://www." + TEN_SAN
 DOMAIN_FAPI = "https://fapi." + TEN_SAN
