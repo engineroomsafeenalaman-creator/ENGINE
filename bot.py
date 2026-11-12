@@ -1,5 +1,4 @@
 import concurrent.futures
-import json
 import os
 import threading
 import time
@@ -32,7 +31,7 @@ def gui_discord(noi_dung):
 
 def lay_danh_sach_coin_alpha_futures():
   try:
-    # 1. Lấy danh sách token Alpha từ cổng web (không tính vào giới hạn API Futures)
+    # 1. Lấy danh sách token Alpha
     path_alpha = (
         "/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
     )
@@ -47,12 +46,11 @@ def lay_danh_sach_coin_alpha_futures():
     }
     print(f"Lấy được {len(alpha_symbols)} token Alpha", flush=True)
 
-    # 2. Lấy danh sách cặp Futures từ trang dữ liệu tĩnh (không bao giờ bị ban IP -1003)
-    url_static = (
-        "https://www."
-        + "://binance.com"
-    )
-    res_static = requests.get(url_static, headers=HEADERS, timeout=15).json()
+    # 2. Dùng trực tiếp biến DOMAIN_WEB đã tạo ở trên để lấy danh sách Futures
+    path_static = "/bapi/futures/v1/public/future/common/brackets"
+    res_static = requests.get(
+        DOMAIN_WEB + path_static, headers=HEADERS, timeout=15
+    ).json()
 
     danh_sach = []
     if res_static.get("data") and res_static["data"].get("brackets"):
@@ -81,7 +79,6 @@ def lay_oi_1_coin(symbol):
 
 def quet_toan_bo_oi(danh_sach_coin):
   ket_qua = {}
-  # Giảm xuống 5 luồng chạy nhẹ nhàng để tránh bị Binance khóa IP dùng chung trên Render
   with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
     futures = [executor.submit(lay_oi_1_coin, sym) for sym in danh_sach_coin]
     for f in concurrent.futures.as_completed(futures):
@@ -110,7 +107,6 @@ def chay_bot_canh_oi():
     time.sleep(60)
     oi_hien_tai = quet_toan_bo_oi(danh_sach_alpha)
 
-    # Nếu IP dùng chung của Render đang bị Binance tạm khóa thì bỏ qua chu kỳ này, không báo lỗi
     if not oi_hien_tai:
       print("⚠️ IP dùng chung đang tạm bận, đợi chu kỳ sau...", flush=True)
       continue
