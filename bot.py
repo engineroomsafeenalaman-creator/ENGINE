@@ -6,9 +6,6 @@ from flask import Flask
 import requests
 from requests.adapters import HTTPAdapter
 
-# ==========================================
-# 1. CAU HINH BOT (DAN LINK DISCORD O DONG DUOI)
-# ==========================================
 WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
 NGUONG_TY_LE_OI = 1.0001
@@ -16,12 +13,11 @@ CHU_KY_QUET_GIAY = 30
 SO_COIN_TOI_DA = 5
 SO_LUONG_SONG_SONG = 10
 
-# Su dung dung domain Futures API (fapi) cua Binance
 BINANCE_ENDPOINTS = [
-    "https://fapi.binance.com",
-    "https://fapi1.binance.com",
-    "https://fapi2.binance.com",
-    "https://fapi3.binance.com",
+    "https://binance.com",
+    "https://binance.com",
+    "https://binance.com",
+    "https://binance.com",
 ]
 current_ep_idx = 0
 
@@ -118,7 +114,7 @@ def format_usd(value):
 def gui_discord(noi_dung):
     url = os.environ.get("WEBHOOK_URL", "") or WEBHOOK_URL
     if not url or "://discord.com" not in url:
-        print(f"[CONSOLE]:\n{noi_dung}\n", flush=True)
+        print(noi_dung, flush=True)
         return
     try:
         for i in range(0, len(noi_dung), 1900):
@@ -250,31 +246,22 @@ def chay_bot_canh_oi():
                     f"- **{c['sym']}**: OI `+{c['phan_tram_oi']:.2f}%` ({format_usd(c['oi_usd'])}) | "
                     f"Gia: `{c['gia']}` (`{c['phan_tram_gia']:+.2f}%`)"
                 )
-gui_discord("\n".join(dong_tin))
-du_lieu_truoc = du_lieu_sau
+            gui_discord("\n".join(dong_tin))
 
-==========================================
+        du_lieu_truoc = du_lieu_sau
 
-
-KHOI DONG BOT NGAM VA WEB SERVER GIU SONG RENDER
-
-
-==========================================
 
 def khoi_dong_bot_ngam():
-global _bot_started
-with _start_lock:
-if not _bot_started:
-_bot_started = True
+    global _bot_started
+    with _start_lock:
+        if not _bot_started:
+            _bot_started = True
 t = threading.Thread(target=chay_bot_canh_oi, daemon=True)
 t.start()
 @app.route("/")
 def health_check():
 khoi_dong_bot_ngam()
 return "Bot Canh OI dang hoat dong!", 200
-
-Tu dong khoi chay luong bot ngay khi import file (ho tro ca python bot.py lan gunicorn)
-
 khoi_dong_bot_ngam()
 if name == "main":
 port = int(os.environ.get("PORT", 10000))
