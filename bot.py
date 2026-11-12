@@ -172,3 +172,31 @@ def main():
 
 if __name__ == "__main__":
     main()
+name: Scan Binance Alpha OI 5m
+
+on:
+  schedule:
+    # Tự động chạy mỗi 5 phút một lần
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run Alpha OI 5m Scanner
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python main.py
