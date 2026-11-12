@@ -12,7 +12,7 @@ import requests
 WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
 NGUONG_TY_LE_OI = 1.00001  # 1.00001 = 0.001% | 1.005 = 0.5% | 1.01 = 1%
-CHU_KY_QUET_GIAY = 60  # Thời gian nghỉ giữa các lần quét (giây)
+CHU_KY_QUET_GIAY = 30  # Thời gian nghỉ giữa các lần quét (giây)
 SO_COIN_TOI_DA = 10  # Lấy Top 10 coin tăng mạnh nhất
 
 TEN_SAN = "binance" + ".com"
