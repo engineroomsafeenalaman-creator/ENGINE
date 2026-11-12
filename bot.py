@@ -12,7 +12,7 @@ import requests
 WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
 NGUONG_TY_LE_OI = 1.00001  # 1.00001 = 0.001% | 1.005 = 0.5% | 1.01 = 1%
-CHU_KY_QUET_GIAY = 60  # Quét mỗi 60 giây
+CHU_KY_QUET_GIAY = 60  # Thời gian nghỉ giữa các lần quét (giây)
 SO_COIN_TOI_DA = 10  # Lấy Top 10 coin tăng mạnh nhất
 
 TEN_SAN = "binance" + ".com"
@@ -88,19 +88,13 @@ def home():
   return "Bot canh OI Alpha dang chay!"
 
 
-# ==========================================
-# 2. CÁC HÀM XỬ LÝ AN TOÀN ĐA LUỒNG
-# ==========================================
 def gui_discord(noi_dung):
   if not WEBHOOK_URL or "://discord.com" not in WEBHOOK_URL:
-    print("Loi: Link WEBHOOK_URL khong hop le!", flush=True)
     return
-
   try:
     for i in range(0, len(noi_dung), 1900):
       doan_tin = noi_dung[i : i + 1900]
-      res = requests.post(WEBHOOK_URL, json={"content": doan_tin}, timeout=10)
-      print(f"Discord status: {res.status_code}", flush=True)
+      requests.post(WEBHOOK_URL, json={"content": doan_tin}, timeout=10)
       time.sleep(0.5)
   except Exception as e:
     print(f"Loi gui Discord: {e}", flush=True)
@@ -133,7 +127,6 @@ def lay_danh_sach_coin_alpha_futures():
           and item["symbol"][:-4] in alpha_symbols
       ]
       if danh_sach:
-        print(f"Lay tu dong duoc {len(danh_sach)} coin Alpha.", flush=True)
         return danh_sach
   except Exception as e:
     print(f"Dung danh sach du phong do loi API: {e}", flush=True)
@@ -144,7 +137,9 @@ def lay_danh_sach_coin_alpha_futures():
 def lay_oi_1_coin(symbol):
   url = DOMAIN_FAPI + f"/fapi/v1/openInterest?symbol={symbol}"
   try:
-    res = requests.get(url, headers=HEADERS, timeout=5)
+    # Nghỉ nhẹ 0.25s mỗi request để tránh vượt Rate Limit của Binance
+    time.sleep(0.25)
+    res = requests.get(url, headers=HEADERS, timeout=6)
     if res.status_code == 200:
       data = res.json()
       return symbol, float(data["openInterest"]), 200
@@ -156,23 +151,33 @@ def lay_oi_1_coin(symbol):
 def quet_toan_bo_oi(danh_sach_coin):
   ket_qua = {}
   ma_loi_gap = set()
+  coin_loi_symbol = set()
 
-  with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+  # Dùng 2 luồng + nghỉ 0.25s = ~8 request/giây (an toàn tuyệt đối với Binance)
+  with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
     futures = [executor.submit(lay_oi_1_coin, sym) for sym in danh_sach_coin]
     for f in concurrent.futures.as_completed(futures):
       sym, oi, status = f.result()
       if status == 200 and oi is not None and oi > 0:
         ket_qua[sym] = oi
+      elif status == 400:
+        # Coin không tồn tại hoặc đã hủy niêm yết trên Futures
+        coin_loi_symbol.add(sym)
       elif status != 200:
         ma_loi_gap.add(status)
 
-  return ket_qua, ma_loi_gap
+  return ket_qua, ma_loi_gap, coin_loi_symbol
 
 
 def chay_bot_canh_oi():
   print("Dang khoi dong Bot canh OI...", flush=True)
   danh_sach_alpha = lay_danh_sach_coin_alpha_futures()
-  oi_phut_truoc, ma_loi = quet_toan_bo_oi(danh_sach_alpha)
+
+  oi_phut_truoc, ma_loi, coin_loi = quet_toan_bo_oi(danh_sach_alpha)
+
+  # Tự động loại bỏ các coin đã bị hủy niêm yết để lần sau quét nhanh hơn
+  if coin_loi:
+    danh_sach_alpha = [c for c in danh_sach_alpha if c not in coin_loi]
 
   if not oi_phut_truoc:
     gui_discord(
@@ -183,15 +188,15 @@ def chay_bot_canh_oi():
     nguong_pt = (NGUONG_TY_LE_OI - 1) * 100
     gui_discord(
         f"✅ **Bot da ket noi!** Quet"
-        f" **{len(oi_phut_truoc)}/{len(danh_sach_alpha)}** coin | Chu ky"
-        f" **{CHU_KY_QUET_GIAY}s** | Nguong **+{nguong_pt:.4f}%**"
+        f" **{len(oi_phut_truoc)}/{len(danh_sach_alpha)}** coin hop le | Chu"
+        f" ky **{CHU_KY_QUET_GIAY}s** | Nguong **+{nguong_pt:.4f}%**"
     )
 
   da_bao_loi = False
 
   while True:
     time.sleep(CHU_KY_QUET_GIAY)
-    oi_hien_tai, ma_loi = quet_toan_bo_oi(danh_sach_alpha)
+    oi_hien_tai, ma_loi, _ = quet_toan_bo_oi(danh_sach_alpha)
 
     if not oi_hien_tai:
       print(f"Khong lay duoc OI. Ma loi: {ma_loi}", flush=True)
@@ -233,19 +238,14 @@ def chay_bot_canh_oi():
     oi_phut_truoc = oi_hien_tai
 
 
-# ==========================================
-# 3. KHOA SOCKET CHONG CHAY TRUNG TREN RENDER
-# ==========================================
 def khoi_dong_an_toan():
   try:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("127.0.0.1", 47291))
-    # Giu bien socket toan cuc de khong bi thu hoi bo nho
     app.config["BOT_LOCK_SOCKET"] = s
     threading.Thread(target=chay_bot_canh_oi, daemon=True).start()
-    print("Da khoa cong 47291 va bat luong bot duy nhat.", flush=True)
   except socket.error:
-    print("Worker phu bo qua khoi dong lai bot.", flush=True)
+    pass
 
 
 khoi_dong_an_toan()
