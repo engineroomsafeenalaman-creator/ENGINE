@@ -9,7 +9,7 @@ import requests
 WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
 # Ngưỡng tăng OI trong 1 phút (1.115 = tăng 11.5% trở lên)
-NGUONG_TY_LE_OI = 1.000001
+NGUONG_TY_LE_OI = 1.00009
 
 TEN_SAN = "binance" + ".com"
 DOMAIN_WEB = "https://www." + TEN_SAN
