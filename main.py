@@ -26,11 +26,12 @@ MIN_OI_CHANGE = 0.001
 COIN_COOLDOWN = 300
 TOP_N = 3
 
-MAX_WORKERS = 10
-MAX_RETRIES = 3
+MAX_WORKERS = 2
+MAX_RETRIES = 2
 
 MIN_SUCCESS_RATIO = 0.80
 REFRESH_TARGETS_SECONDS = 1800
+REQUEST_INTERVAL = 0.35
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
@@ -51,11 +52,15 @@ log = logging.getLogger("ALPHA_RADAR")
 
 
 # =====================================================
-# HTTP SESSION
+# GLOBAL STATE
 # =====================================================
 
-http = requests.Session()
-http.headers.update(HEADERS)
+api_lock = threading.Lock()
+api_block_until = 0
+next_request_time = 0
+
+discord_lock = threading.Lock()
+coin_last_alert = {}
 
 
 # =====================================================
@@ -78,26 +83,38 @@ def health():
     return jsonify({"status": "healthy"})
 
 
-def start_health_server():
-    port = int(os.getenv("PORT", "10000"))
-
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        threaded=True,
-        use_reloader=False
-    )
-
-
 # =====================================================
-# API REQUEST WITH RETRY
+# BINANCE API REQUEST
 # =====================================================
 
 def get_json(url, params=None, timeout=12):
 
+    global api_block_until
+    global next_request_time
+
     for attempt in range(MAX_RETRIES):
 
+        with api_lock:
+
+            now = time.monotonic()
+
+            if now < api_block_until:
+                return None
+
+            wait = next_request_time - now
+
+            if wait > 0:
+                time.sleep(wait)
+
+            if time.monotonic() < api_block_until:
+                return None
+
+            next_request_time = (
+                time.monotonic() + REQUEST_INTERVAL
+            )
+
         try:
+
             response = requests.get(
                 url,
                 params=params,
@@ -107,23 +124,33 @@ def get_json(url, params=None, timeout=12):
 
             if response.status_code in (418, 429):
 
-                retry = response.headers.get(
-                    "Retry-After", "5"
+                retry_after = response.headers.get(
+                    "Retry-After"
                 )
 
                 try:
-                    delay = min(float(retry), 60)
-                except ValueError:
-                    delay = 5
+                    delay = float(retry_after)
+                except (TypeError, ValueError):
+                    delay = (
+                        300 if response.status_code == 418
+                        else 60
+                    )
 
-                log.warning(
-                    "Rate limit %s. Waiting %.1fs",
+                delay = min(max(delay, 60), 900)
+
+                with api_lock:
+                    api_block_until = max(
+                        api_block_until,
+                        time.monotonic() + delay
+                    )
+
+                log.error(
+                    "BINANCE HTTP %s - Pausing API %.0f seconds",
                     response.status_code,
                     delay
                 )
 
-                time.sleep(delay)
-                continue
+                return None
 
             response.raise_for_status()
 
@@ -132,7 +159,7 @@ def get_json(url, params=None, timeout=12):
         except (requests.RequestException, ValueError) as e:
 
             log.warning(
-                "API retry %s/%s: %s",
+                "API error %s/%s: %s",
                 attempt + 1,
                 MAX_RETRIES,
                 e
@@ -145,7 +172,7 @@ def get_json(url, params=None, timeout=12):
 
 
 # =====================================================
-# GET BINANCE ALPHA TOKENS
+# BINANCE ALPHA TOKENS
 # =====================================================
 
 def get_binance_alpha_tokens():
@@ -160,6 +187,10 @@ def get_binance_alpha_tokens():
         log.error("Alpha API error: %s", data)
         return None
 
+    if data.get("code") not in (None, "000000"):
+        log.error("Alpha API code: %s", data.get("code"))
+        return None
+
     token_data = data.get("data")
 
     if isinstance(token_data, dict):
@@ -170,7 +201,7 @@ def get_binance_alpha_tokens():
         )
 
     if not isinstance(token_data, list):
-        log.error("Invalid Alpha token list structure")
+        log.error("Invalid Alpha token structure")
         return None
 
     symbols = set()
@@ -189,13 +220,13 @@ def get_binance_alpha_tokens():
         log.error("No Alpha symbols found")
         return None
 
-    log.info("Alpha tokens: %s", len(symbols))
+    log.info("Alpha tokens loaded: %s", len(symbols))
 
     return symbols
 
 
 # =====================================================
-# GET ACTIVE FUTURES
+# FUTURES EXCHANGE INFO
 # =====================================================
 
 def get_active_futures_symbols():
@@ -205,6 +236,7 @@ def get_active_futures_symbols():
     )
 
     if not isinstance(data, dict):
+        log.error("Futures ExchangeInfo unavailable")
         return None
 
     futures_map = {}
@@ -227,13 +259,13 @@ def get_active_futures_symbols():
                 if base.startswith("1000") and len(base) > 4:
                     futures_map[base[4:]] = symbol
 
-    log.info("Futures symbols: %s", len(futures_map))
+    log.info("Active Futures: %s", len(futures_map))
 
     return futures_map
 
 
 # =====================================================
-# MATCH ALPHA + FUTURES
+# MATCH ALPHA WITH FUTURES
 # =====================================================
 
 def get_target_symbols():
@@ -259,14 +291,13 @@ def get_target_symbols():
         return None
 
     log.info("Tracking %s Alpha Futures", len(targets))
-
     log.info("TARGETS: %s", ", ".join(targets))
 
     return targets
 
 
 # =====================================================
-# GET SINGLE OPEN INTEREST
+# FETCH OPEN INTEREST
 # =====================================================
 
 def fetch_single_oi(symbol):
@@ -331,7 +362,7 @@ def snapshot_all_oi(symbols):
 
 
 # =====================================================
-# GET MARK PRICES
+# MARK PRICE
 # =====================================================
 
 def get_all_mark_prices():
@@ -342,6 +373,7 @@ def get_all_mark_prices():
     )
 
     if not isinstance(data, list):
+        log.error("Mark Price unavailable")
         return None
 
     prices = {}
@@ -383,7 +415,6 @@ def calculate_results(before, after, prices):
             (current - previous) / previous
         ) * 100
 
-        # Strictly greater than 0.001%
         if abs(change) <= MIN_OI_CHANGE:
             continue
 
@@ -403,15 +434,7 @@ def calculate_results(before, after, prices):
 
 
 # =====================================================
-# PER-COIN COOLDOWN
-# =====================================================
-
-coin_last_alert = {}
-discord_lock = threading.Lock()
-
-
-# =====================================================
-# SEND DISCORD
+# DISCORD COOLDOWN
 # =====================================================
 
 def send_discord_notification(coins):
@@ -441,7 +464,7 @@ def send_discord_notification(coins):
         eligible = eligible[:TOP_N]
 
         if not eligible:
-            log.info("All matching coins are in cooldown")
+            log.info("All coins are in cooldown")
             return False
 
         fields = []
@@ -524,7 +547,7 @@ def send_discord_notification(coins):
 
 
 # =====================================================
-# MAIN BOT
+# MAIN SCANNER
 # =====================================================
 
 def main():
@@ -535,9 +558,8 @@ def main():
 
     log.info("Threshold: %.5f%%", MIN_OI_CHANGE)
     log.info("Interval: %s seconds", WAIT_SECONDS)
-    log.info("Coin cooldown: %s seconds", COIN_COOLDOWN)
+    log.info("Cooldown: %s seconds", COIN_COOLDOWN)
 
-    # Retry initialization instead of exiting
     targets = None
 
     while not targets:
@@ -545,7 +567,7 @@ def main():
         targets = get_target_symbols()
 
         if not targets:
-            log.error("Initialization failed. Retry in 60s")
+            log.error("Initialization failed. Retry in 60 seconds")
             time.sleep(60)
 
     before = None
@@ -555,8 +577,8 @@ def main():
         before = snapshot_all_oi(targets)
 
         if before is None:
-            log.warning("Initial snapshot failed. Retry in 30s")
-            time.sleep(30)
+            log.warning("Initial snapshot failed. Retry in 60 seconds")
+            time.sleep(60)
 
     last_refresh = time.monotonic()
 
@@ -569,7 +591,6 @@ def main():
             log.info("------------------------------------")
             log.info("START NEW OI SCAN")
 
-            # Refresh Alpha list every 30 minutes
             if (
                 cycle_start - last_refresh
                 >= REFRESH_TARGETS_SECONDS
@@ -582,10 +603,8 @@ def main():
                     new_snapshot = snapshot_all_oi(new_targets)
 
                     if new_snapshot:
-
                         targets = new_targets
                         before = new_snapshot
-
                         log.info("Target list refreshed")
 
                 last_refresh = cycle_start
@@ -598,19 +617,18 @@ def main():
             )
 
             log.info("Waiting %.1f seconds", sleep_time)
-
             time.sleep(sleep_time)
 
             after = snapshot_all_oi(targets)
 
             if after is None:
-                log.warning("Bad snapshot. Keeping previous data")
+                log.warning("Snapshot failed. Keeping old data")
                 continue
 
             prices = get_all_mark_prices()
 
             if not prices:
-                log.warning("Mark price unavailable")
+                log.warning("Mark Price unavailable")
                 before = after
                 continue
 
@@ -626,7 +644,6 @@ def main():
                 len(results)
             )
 
-            # Display TOP 10 in Render logs
             for idx, coin in enumerate(results[:10], 1):
 
                 log.info(
@@ -646,24 +663,31 @@ def main():
 
             log.info("SCAN COMPLETED")
 
-        except KeyboardInterrupt:
-            log.info("Bot stopped")
-            break
-
         except Exception:
-            log.exception("Main loop error")
+            log.exception("Main scanner error")
             time.sleep(10)
 
 
 # =====================================================
-# START APPLICATION
+# START RENDER
 # =====================================================
 
 if __name__ == "__main__":
 
-    threading.Thread(
-        target=start_health_server,
-        daemon=True
-    ).start()
+    port = int(os.getenv("PORT", "10000"))
 
-    main()
+    log.info("Starting HTTP server on port %s", port)
+
+    bot_thread = threading.Thread(
+        target=main,
+        daemon=True
+    )
+
+    bot_thread.start()
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        threaded=True,
+        use_reloader=False
+    )
