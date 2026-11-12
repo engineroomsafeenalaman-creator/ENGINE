@@ -8,9 +8,9 @@ from flask import Flask, jsonify
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-# =====================================================
-# CONFIGURATION
-# =====================================================
+# ==========================================
+# 1. CONFIGURATION
+# ==========================================
 
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
@@ -27,45 +27,45 @@ COIN_COOLDOWN = 300
 TOP_N = 3
 
 MAX_WORKERS = 2
-MAX_RETRIES = 2
-
+REQUEST_INTERVAL = 0.5
 MIN_SUCCESS_RATIO = 0.80
 REFRESH_TARGETS_SECONDS = 1800
-REQUEST_INTERVAL = 0.35
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
-    "Accept": "application/json"
+    "Accept": "application/json",
+    "Referer": "https://www.binance.com/"
 }
 
 
-# =====================================================
-# LOGGING
-# =====================================================
+# ==========================================
+# 2. LOGGING
+# ==========================================
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    force=True
 )
 
 log = logging.getLogger("ALPHA_RADAR")
 
 
-# =====================================================
-# GLOBAL STATE
-# =====================================================
+# ==========================================
+# 3. GLOBAL STATE
+# ==========================================
 
 api_lock = threading.Lock()
-api_block_until = 0
-next_request_time = 0
+api_block_until = 0.0
+next_request_time = 0.0
 
 discord_lock = threading.Lock()
 coin_last_alert = {}
 
 
-# =====================================================
-# RENDER HEALTH CHECK
-# =====================================================
+# ==========================================
+# 4. FLASK HEALTH CHECK
+# ==========================================
 
 app = Flask(__name__)
 
@@ -83,22 +83,23 @@ def health():
     return jsonify({"status": "healthy"})
 
 
-# =====================================================
-# BINANCE API REQUEST
-# =====================================================
+# ==========================================
+# 5. BINANCE REQUEST HANDLER
+# ==========================================
 
-def get_json(url, params=None, timeout=12):
+def get_json(url, params=None, timeout=15):
 
     global api_block_until
     global next_request_time
 
-    for attempt in range(MAX_RETRIES):
+    for attempt in range(2):
 
         with api_lock:
 
             now = time.monotonic()
 
             if now < api_block_until:
+                log.warning("Binance API is in cooldown")
                 return None
 
             wait = next_request_time - now
@@ -145,9 +146,18 @@ def get_json(url, params=None, timeout=12):
                     )
 
                 log.error(
-                    "BINANCE HTTP %s - Pausing API %.0f seconds",
+                    "Binance HTTP %s. Pausing API %.0f seconds",
                     response.status_code,
                     delay
+                )
+
+                return None
+
+            if response.status_code in (403, 451):
+
+                log.error(
+                    "Binance access restricted: HTTP %s",
+                    response.status_code
                 )
 
                 return None
@@ -156,86 +166,151 @@ def get_json(url, params=None, timeout=12):
 
             return response.json()
 
-        except (requests.RequestException, ValueError) as e:
+        except requests.RequestException as e:
 
             log.warning(
-                "API error %s/%s: %s",
+                "Request attempt %s failed: %s",
                 attempt + 1,
-                MAX_RETRIES,
                 e
             )
 
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(2 ** attempt)
+        except ValueError as e:
+
+            log.error("Invalid JSON response: %s", e)
+            return None
+
+        if attempt == 0:
+            time.sleep(3)
 
     return None
 
 
-# =====================================================
-# BINANCE ALPHA TOKENS
-# =====================================================
+# ==========================================
+# 6. BINANCE ALPHA TOKEN LIST
+# ==========================================
 
 def get_binance_alpha_tokens():
 
-    data = get_json(ALPHA_URL, timeout=20)
+    log.info("Loading Binance Alpha tokens...")
 
-    if not isinstance(data, dict):
-        log.error("Alpha API unavailable")
-        return None
+    try:
 
-    if data.get("success") is False:
-        log.error("Alpha API error: %s", data)
-        return None
-
-    if data.get("code") not in (None, "000000"):
-        log.error("Alpha API code: %s", data.get("code"))
-        return None
-
-    token_data = data.get("data")
-
-    if isinstance(token_data, dict):
-        token_data = (
-            token_data.get("tokens")
-            or token_data.get("list")
-            or token_data.get("data")
+        response = requests.get(
+            ALPHA_URL,
+            headers=HEADERS,
+            timeout=20
         )
 
-    if not isinstance(token_data, list):
-        log.error("Invalid Alpha token structure")
+        log.info(
+            "ALPHA HTTP STATUS: %s",
+            response.status_code
+        )
+
+        if response.status_code in (418, 429):
+
+            log.error(
+                "Alpha API rate limited: HTTP %s",
+                response.status_code
+            )
+
+            return None
+
+        if response.status_code in (403, 451):
+
+            log.error(
+                "Alpha API access restricted: HTTP %s",
+                response.status_code
+            )
+
+            return None
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        if not isinstance(data, dict):
+            log.error("Alpha response is not a JSON object")
+            return None
+
+        if data.get("success") is False:
+
+            log.error(
+                "Alpha API error: %s",
+                str(data)[:500]
+            )
+
+            return None
+
+        if data.get("code") not in (None, "000000"):
+
+            log.error(
+                "Alpha API code: %s",
+                data.get("code")
+            )
+
+            return None
+
+        token_data = data.get("data")
+
+        if isinstance(token_data, dict):
+
+            token_data = (
+                token_data.get("tokens")
+                or token_data.get("list")
+                or token_data.get("data")
+            )
+
+        if not isinstance(token_data, list):
+
+            log.error(
+                "Unexpected Alpha response structure: %s",
+                str(data)[:800]
+            )
+
+            return None
+
+        symbols = set()
+
+        for item in token_data:
+
+            if not isinstance(item, dict):
+                continue
+
+            symbol = item.get("symbol")
+
+            if isinstance(symbol, str) and symbol.strip():
+                symbols.add(symbol.strip().upper())
+
+        if not symbols:
+            log.error("Alpha token list is empty")
+            return None
+
+        log.info(
+            "ALPHA TOKENS LOADED: %s",
+            len(symbols)
+        )
+
+        return symbols
+
+    except Exception:
+
+        log.exception("ALPHA TOKEN REQUEST FAILED")
         return None
-
-    symbols = set()
-
-    for token in token_data:
-
-        if not isinstance(token, dict):
-            continue
-
-        symbol = token.get("symbol")
-
-        if isinstance(symbol, str) and symbol.strip():
-            symbols.add(symbol.strip().upper())
-
-    if not symbols:
-        log.error("No Alpha symbols found")
-        return None
-
-    log.info("Alpha tokens loaded: %s", len(symbols))
-
-    return symbols
-
-
-# =====================================================
-# FUTURES EXCHANGE INFO
-# =====================================================
+        # ==========================================
+# 7. LOAD BINANCE FUTURES SYMBOLS
+# ==========================================
 
 def get_active_futures_symbols():
 
+    log.info("Loading Binance Futures symbols...")
+
     data = get_json(
-        f"{FUTURES_URL}/fapi/v1/exchangeInfo"
+        f"{FUTURES_URL}/fapi/v1/exchangeInfo",
+        timeout=20
     )
 
     if not isinstance(data, dict):
+
         log.error("Futures ExchangeInfo unavailable")
         return None
 
@@ -259,14 +334,17 @@ def get_active_futures_symbols():
                 if base.startswith("1000") and len(base) > 4:
                     futures_map[base[4:]] = symbol
 
-    log.info("Active Futures: %s", len(futures_map))
+    log.info(
+        "ACTIVE FUTURES: %s",
+        len(futures_map)
+    )
 
     return futures_map
 
 
-# =====================================================
-# MATCH ALPHA WITH FUTURES
-# =====================================================
+# ==========================================
+# 8. MATCH ALPHA WITH FUTURES
+# ==========================================
 
 def get_target_symbols():
 
@@ -287,25 +365,33 @@ def get_target_symbols():
     })
 
     if not targets:
+
         log.error("No matching Alpha Futures")
         return None
 
-    log.info("Tracking %s Alpha Futures", len(targets))
-    log.info("TARGETS: %s", ", ".join(targets))
+    log.info(
+        "TRACKING ALPHA FUTURES: %s",
+        len(targets)
+    )
+
+    log.info(
+        "TARGETS: %s",
+        ", ".join(targets)
+    )
 
     return targets
 
 
-# =====================================================
-# FETCH OPEN INTEREST
-# =====================================================
+# ==========================================
+# 9. FETCH OPEN INTEREST
+# ==========================================
 
 def fetch_single_oi(symbol):
 
     data = get_json(
         f"{FUTURES_URL}/fapi/v1/openInterest",
         params={"symbol": symbol},
-        timeout=10
+        timeout=12
     )
 
     if not isinstance(data, dict):
@@ -313,13 +399,14 @@ def fetch_single_oi(symbol):
 
     try:
         return symbol, float(data["openInterest"])
+
     except (KeyError, TypeError, ValueError):
         return symbol, None
 
 
-# =====================================================
-# SNAPSHOT ALL OI
-# =====================================================
+# ==========================================
+# 10. SNAPSHOT ALL OPEN INTEREST
+# ==========================================
 
 def snapshot_all_oi(symbols):
 
@@ -337,42 +424,52 @@ def snapshot_all_oi(symbols):
         for future in as_completed(futures):
 
             try:
+
                 symbol, oi = future.result()
 
                 if oi is not None and oi >= 0:
                     snapshot[symbol] = oi
 
-            except Exception as e:
-                log.warning("Snapshot error: %s", e)
+            except Exception:
 
-    ratio = len(snapshot) / len(symbols) if symbols else 0
+                log.exception("OI snapshot error")
+
+    ratio = (
+        len(snapshot) / len(symbols)
+        if symbols else 0
+    )
 
     log.info(
-        "OI Snapshot: %s/%s (%.1f%%)",
+        "OI SNAPSHOT: %s/%s (%.1f%%)",
         len(snapshot),
         len(symbols),
         ratio * 100
     )
 
     if ratio < MIN_SUCCESS_RATIO:
-        log.warning("Incomplete snapshot - skipped")
+
+        log.warning(
+            "Incomplete snapshot. Skipping calculation."
+        )
+
         return None
 
     return snapshot
 
 
-# =====================================================
-# MARK PRICE
-# =====================================================
+# ==========================================
+# 11. GET MARK PRICES
+# ==========================================
 
 def get_all_mark_prices():
 
     data = get_json(
         f"{FUTURES_URL}/fapi/v1/premiumIndex",
-        timeout=15
+        timeout=20
     )
 
     if not isinstance(data, list):
+
         log.error("Mark Price unavailable")
         return None
 
@@ -381,6 +478,7 @@ def get_all_mark_prices():
     for item in data:
 
         try:
+
             symbol = item["symbol"]
             price = float(item["markPrice"])
 
@@ -390,12 +488,17 @@ def get_all_mark_prices():
         except (KeyError, TypeError, ValueError):
             continue
 
+    log.info(
+        "MARK PRICES LOADED: %s",
+        len(prices)
+    )
+
     return prices
 
 
-# =====================================================
-# CALCULATE OI CHANGE
-# =====================================================
+# ==========================================
+# 12. CALCULATE OI CHANGE
+# ==========================================
 
 def calculate_results(before, after, prices):
 
@@ -403,7 +506,10 @@ def calculate_results(before, after, prices):
 
     for symbol, previous in before.items():
 
-        if symbol not in after or symbol not in prices:
+        if symbol not in after:
+            continue
+
+        if symbol not in prices:
             continue
 
         current = after[symbol]
@@ -419,10 +525,17 @@ def calculate_results(before, after, prices):
             continue
 
         results.append({
+
             "symbol": symbol,
+
             "oi_change_pct": change,
+
             "abs_change_pct": abs(change),
-            "current_oi_usd": current * prices[symbol]
+
+            "current_oi_usd": (
+                current * prices[symbol]
+            )
+
         })
 
     results.sort(
@@ -431,19 +544,15 @@ def calculate_results(before, after, prices):
     )
 
     return results
-
-
-# =====================================================
-# DISCORD COOLDOWN
-# =====================================================
+    # ==========================================
+# 13. SEND DISCORD NOTIFICATION
+# ==========================================
 
 def send_discord_notification(coins):
 
     if not DISCORD_WEBHOOK_URL:
-        log.error("Missing DISCORD_WEBHOOK_URL")
-        return False
 
-    if not coins:
+        log.error("DISCORD_WEBHOOK_URL is missing")
         return False
 
     now = time.time()
@@ -456,7 +565,10 @@ def send_discord_notification(coins):
 
             symbol = coin["symbol"]
 
-            last = coin_last_alert.get(symbol, 0)
+            last = coin_last_alert.get(
+                symbol,
+                0
+            )
 
             if now - last >= COIN_COOLDOWN:
                 eligible.append(coin)
@@ -464,7 +576,8 @@ def send_discord_notification(coins):
         eligible = eligible[:TOP_N]
 
         if not eligible:
-            log.info("All coins are in cooldown")
+
+            log.info("No coins eligible for Discord alert")
             return False
 
         fields = []
@@ -474,43 +587,75 @@ def send_discord_notification(coins):
             change = coin["oi_change_pct"]
 
             if change > 0:
+
                 icon = "🟢"
                 direction = "OI INCREASE"
                 sign = "+"
+
             else:
+
                 icon = "🔴"
                 direction = "OI DECREASE"
                 sign = ""
 
             fields.append({
+
                 "name": f"#{idx} {coin['symbol']} {icon}",
+
                 "value": (
+
                     f"**Direction:** {direction}\n"
+
                     f"**OI Change (60s):** "
                     f"`{sign}{change:.5f}%`\n"
+
                     f"**Current OI:** "
                     f"`${coin['current_oi_usd']:,.2f}`"
+
                 ),
+
                 "inline": False
+
             })
 
         payload = {
+
             "username": "Binance Alpha OI Radar",
-            "allowed_mentions": {"parse": []},
+
+            "allowed_mentions": {
+                "parse": []
+            },
+
             "embeds": [{
+
                 "title": "⚡ BINANCE ALPHA - OI RADAR",
+
                 "description": (
+
                     "TOP 3 Open Interest movements\n"
+
                     f"Threshold: `{MIN_OI_CHANGE}%`\n"
-                    "Timeframe: `60 seconds`\n"
+
+                    "Timeframe: approximately `60 seconds`\n"
+
                     "Cooldown: `5 minutes per coin`"
+
                 ),
+
                 "color": 16766720,
+
                 "fields": fields,
+
                 "footer": {
-                    "text": "Binance USD-M Futures | OI Scanner"
+
+                    "text": (
+                        "Binance USD-M Futures | OI Scanner"
+                    )
+
                 }
+
             }]
+
         }
 
         try:
@@ -525,11 +670,17 @@ def send_discord_notification(coins):
             if response.status_code in (200, 204):
 
                 for coin in eligible:
-                    coin_last_alert[coin["symbol"]] = now
+
+                    coin_last_alert[
+                        coin["symbol"]
+                    ] = now
 
                 log.info(
                     "DISCORD SENT: %s",
-                    ", ".join(c["symbol"] for c in eligible)
+                    ", ".join(
+                        coin["symbol"]
+                        for coin in eligible
+                    )
                 )
 
                 return True
@@ -540,15 +691,16 @@ def send_discord_notification(coins):
                 response.text[:300]
             )
 
-        except requests.RequestException as e:
-            log.error("Discord error: %s", e)
+        except requests.RequestException:
+
+            log.exception("Discord request failed")
 
         return False
 
 
-# =====================================================
-# MAIN SCANNER
-# =====================================================
+# ==========================================
+# 14. MAIN SCANNER
+# ==========================================
 
 def main():
 
@@ -556,9 +708,25 @@ def main():
     log.info("BINANCE ALPHA OI RADAR STARTING")
     log.info("====================================")
 
-    log.info("Threshold: %.5f%%", MIN_OI_CHANGE)
-    log.info("Interval: %s seconds", WAIT_SECONDS)
-    log.info("Cooldown: %s seconds", COIN_COOLDOWN)
+    log.info(
+        "Threshold: %.5f%%",
+        MIN_OI_CHANGE
+    )
+
+    log.info(
+        "Interval: %s seconds",
+        WAIT_SECONDS
+    )
+
+    log.info(
+        "Coin cooldown: %s seconds",
+        COIN_COOLDOWN
+    )
+
+    if not DISCORD_WEBHOOK_URL:
+        log.error("DISCORD_WEBHOOK_URL is missing")
+
+    # Load initial Alpha Futures list
 
     targets = None
 
@@ -567,8 +735,14 @@ def main():
         targets = get_target_symbols()
 
         if not targets:
-            log.error("Initialization failed. Retry in 60 seconds")
+
+            log.error(
+                "Initialization failed. Retry in 60 seconds"
+            )
+
             time.sleep(60)
+
+    # Initial OI snapshot
 
     before = None
 
@@ -577,10 +751,16 @@ def main():
         before = snapshot_all_oi(targets)
 
         if before is None:
-            log.warning("Initial snapshot failed. Retry in 60 seconds")
+
+            log.warning(
+                "Initial snapshot failed. Retry in 60 seconds"
+            )
+
             time.sleep(60)
 
     last_refresh = time.monotonic()
+
+    # Continuous scanning
 
     while True:
 
@@ -591,6 +771,8 @@ def main():
             log.info("------------------------------------")
             log.info("START NEW OI SCAN")
 
+            # Refresh Alpha list every 30 minutes
+
             if (
                 cycle_start - last_refresh
                 >= REFRESH_TARGETS_SECONDS
@@ -600,37 +782,64 @@ def main():
 
                 if new_targets:
 
-                    new_snapshot = snapshot_all_oi(new_targets)
+                    new_snapshot = snapshot_all_oi(
+                        new_targets
+                    )
 
                     if new_snapshot:
+
                         targets = new_targets
                         before = new_snapshot
-                        log.info("Target list refreshed")
+
+                        log.info("Targets refreshed")
 
                 last_refresh = cycle_start
 
-            elapsed = time.monotonic() - cycle_start
+            # Wait until approximately 60 seconds
+            # after the previous cycle started
+
+            elapsed = (
+                time.monotonic() - cycle_start
+            )
 
             sleep_time = max(
                 0,
                 WAIT_SECONDS - elapsed
             )
 
-            log.info("Waiting %.1f seconds", sleep_time)
+            log.info(
+                "Waiting %.1f seconds",
+                sleep_time
+            )
+
             time.sleep(sleep_time)
+
+            # Second OI snapshot
 
             after = snapshot_all_oi(targets)
 
             if after is None:
-                log.warning("Snapshot failed. Keeping old data")
+
+                log.warning(
+                    "Snapshot failed. Keeping previous data"
+                )
+
                 continue
+
+            # Get mark prices
 
             prices = get_all_mark_prices()
 
             if not prices:
-                log.warning("Mark Price unavailable")
+
+                log.warning(
+                    "Mark Price unavailable"
+                )
+
                 before = after
                 continue
+
+            # Calculate changes
 
             results = calculate_results(
                 before,
@@ -639,44 +848,70 @@ def main():
             )
 
             log.info(
-                "Coins above %.5f%%: %s",
+                "COINS ABOVE %.5f%%: %s",
                 MIN_OI_CHANGE,
                 len(results)
             )
 
+            # Print TOP 10 to logs
+
             for idx, coin in enumerate(results[:10], 1):
 
                 log.info(
+
                     "RANK %s | %s | OI: %+.5f%% | USD: $%s",
+
                     idx,
+
                     coin["symbol"],
+
                     coin["oi_change_pct"],
+
                     f"{coin['current_oi_usd']:,.2f}"
+
                 )
 
+            # Send TOP 3 to Discord
+
             if results:
+
                 send_discord_notification(results)
+
             else:
-                log.info("No qualifying OI movements")
+
+                log.info(
+                    "No qualifying OI movements"
+                )
+
+            # Update baseline
 
             before = after
 
             log.info("SCAN COMPLETED")
 
         except Exception:
-            log.exception("Main scanner error")
+
+            log.exception(
+                "Main scanner error"
+            )
+
             time.sleep(10)
 
 
-# =====================================================
-# START RENDER
-# =====================================================
+# ==========================================
+# 15. START RENDER WEB SERVICE
+# ==========================================
 
 if __name__ == "__main__":
 
-    port = int(os.getenv("PORT", "10000"))
+    port = int(
+        os.getenv("PORT", "10000")
+    )
 
-    log.info("Starting HTTP server on port %s", port)
+    log.info(
+        "Starting HTTP server on port %s",
+        port
+    )
 
     bot_thread = threading.Thread(
         target=main,
