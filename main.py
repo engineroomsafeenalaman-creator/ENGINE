@@ -88,14 +88,11 @@ def health():
 # ==========================================
 
 def get_json(url, params=None, timeout=15):
-
     global api_block_until
     global next_request_time
 
     for attempt in range(2):
-
         with api_lock:
-
             now = time.monotonic()
 
             if now < api_block_until:
@@ -103,19 +100,15 @@ def get_json(url, params=None, timeout=15):
                 return None
 
             wait = next_request_time - now
-
             if wait > 0:
                 time.sleep(wait)
 
             if time.monotonic() < api_block_until:
                 return None
 
-            next_request_time = (
-                time.monotonic() + REQUEST_INTERVAL
-            )
+            next_request_time = time.monotonic() + REQUEST_INTERVAL
 
         try:
-
             response = requests.get(
                 url,
                 params=params,
@@ -123,11 +116,8 @@ def get_json(url, params=None, timeout=15):
                 timeout=timeout
             )
 
-         if response.status_code in (418, 429):
-
-                retry_after = response.headers.get(
-                    "Retry-After"
-                )
+            if response.status_code in (418, 429):
+                retry_after = response.headers.get("Retry-After")
 
                 log.error(
                     "Binance HTTP %s | Retry-After: %s",
@@ -138,10 +128,7 @@ def get_json(url, params=None, timeout=15):
                 try:
                     delay = float(retry_after)
                 except (TypeError, ValueError):
-                    delay = (
-                        900 if response.status_code == 418
-                        else 60
-                    )
+                    delay = 900 if response.status_code == 418 else 60
 
                 delay = max(delay, 60)
 
@@ -154,20 +141,16 @@ def get_json(url, params=None, timeout=15):
                 return None
 
             if response.status_code in (403, 451):
-
                 log.error(
                     "Binance access restricted: HTTP %s",
                     response.status_code
                 )
-
                 return None
 
             response.raise_for_status()
-
             return response.json()
 
         except requests.RequestException as e:
-
             log.warning(
                 "Request attempt %s failed: %s",
                 attempt + 1,
@@ -175,7 +158,6 @@ def get_json(url, params=None, timeout=15):
             )
 
         except ValueError as e:
-
             log.error("Invalid JSON response: %s", e)
             return None
 
