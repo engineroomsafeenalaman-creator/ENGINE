@@ -1,24 +1,30 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
-import socket
 import threading
 import time
 from flask import Flask
 import requests
+from requests.adapters import HTTPAdapter
 
 # ==========================================
 # 1. CẤU HÌNH BOT
 # ==========================================
-WEBHOOK_URL = os.environ.get(
-    "WEBHOOK_URL", "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
-)
+WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
-NGUONG_TY_LE_OI = 1.0001  # 1.0001 = 0.01% (Mức test độ mượt)
-CHU_KY_QUET_GIAY = 30  # Quét chuẩn mỗi 30 giây
-SO_COIN_TOI_DA = 5  # In ra Top 5 coin tăng mạnh nhất
-SO_LUONG_SONG_SONG = 15  # Số luồng quét song song an toàn cho chu kỳ 30s
+NGUONG_TY_LE_OI = 1.0001  # Tăng > 0.01%
+CHU_KY_QUET_GIAY = 30
+SO_COIN_TOI_DA = 5
+SO_LUONG_SONG_SONG = 15
 
-# Danh sách 264 coin Alpha của bạn
+# Endpoint chính thức và dự phòng của Binance Futures
+BINANCE_ENDPOINTS = [
+    "https://fapi.binance.com",
+    "https://fapi1.binance.com",
+    "https://fapi2.binance.com",
+    "https://fapi3.binance.com",
+]
+ACTIVE_BASE_URL = BINANCE_ENDPOINTS[0]
+
 DANH_SACH_ALPHA = {
     "AIXBTUSDT", "ZKJUSDT", "ARCUSDT", "GRIFFAINUSDT", "SWARMSUSDT",
     "ALCHUSDT", "FARTCOINUSDT", "PENGUUSDT", "VIRTUALUSDT", "VANAUSDT",
@@ -77,161 +83,175 @@ DANH_SACH_ALPHA = {
 
 app = Flask(__name__)
 
+# Khởi tạo Session và Pool tái sử dụng xuyên suốt vòng đời app
 session = requests.Session()
-adapter = requests.adapters.HTTPAdapter(
-    pool_connections=SO_LUONG_SONG_SONG, pool_maxsize=SO_LUONG_SONG_SONG
+adapter = HTTPAdapter(
+    pool_connections=SO_LUONG_SONG_SONG + 5,
+    pool_maxsize=SO_LUONG_SONG_SONG + 5,
 )
 session.mount("https://", adapter)
-session.headers.update({"User-Agent": "Mozilla/5.0"})
+session.headers.update({
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+})
+
+# Tạo sẵn ThreadPoolExecutor dùng chung
+executor = ThreadPoolExecutor(max_workers=SO_LUONG_SONG_SONG)
+rate_limit_event = threading.Event()
 
 
 @app.route("/")
 def home():
-  return "Bot canh OI Binance Futures (30s) dang chay!"
+    return "Bot canh OI Binance Futures (30s) dang chay!"
+
+
+def format_usd(value):
+    if value >= 1_000_000:
+        return f"${value / 1_000_000:.2f}M"
+    if value >= 1_000:
+        return f"${value / 1_000:.1f}K"
+    return f"${value:.0f}"
 
 
 def gui_discord(noi_dung):
-  if not WEBHOOK_URL or "://discord.com" not in WEBHOOK_URL:
-    print(f"[CHUA CO WEBHOOK - CONSOLE]:\n{noi_dung}\n", flush=True)
-    return
+    if not WEBHOOK_URL or "://discord.com" not in WEBHOOK_URL:
+        print(f"[CONSOLE]:\n{noi_dung}\n", flush=True)
+        return
+    try:
+        for i in range(0, len(noi_dung), 1900):
+            doan_tin = noi_dung[i : i + 1900]
+            res = session.post(WEBHOOK_URL, json={"content": doan_tin}, timeout=10)
+            if res.status_code == 429:
+                retry_after = float(res.json().get("retry_after", 2))
+                time.sleep(retry_after)
+                session.post(WEBHOOK_URL, json={"content": doan_tin}, timeout=10)
+            time.sleep(0.3)
+    except Exception as e:
+        print(f"Loi gui Discord: {e}", flush=True)
 
-  try:
-    for i in range(0, len(noi_dung), 1900):
-      doan_tin = noi_dung[i : i + 1900]
-      res = session.post(WEBHOOK_URL, json={"content": doan_tin}, timeout=10)
-      if res.status_code == 429:
-        retry_after = res.json().get("retry_after", 2)
-        time.sleep(retry_after)
-        session.post(WEBHOOK_URL, json={"content": doan_tin}, timeout=10)
-      time.sleep(0.3)
-  except Exception as e:
-    print(f"Loi gui Discord: {e}", flush=True)
+
+def kiem_tra_ket_noi_binance():
+    global ACTIVE_BASE_URL
+    chi_tiet_loi = []
+    for ep in BINANCE_ENDPOINTS:
+        try:
+            r = session.get(f"{ep}/fapi/v1/ticker/price?symbol=BTCUSDT", timeout=6)
+            if r.status_code == 200:
+                ACTIVE_BASE_URL = ep
+                return True, f"Kết nối thành công tới `{ep}`"
+            chi_tiet_loi.append(f"`{ep}` -> HTTP **{r.status_code}**")
+        except Exception as e:
+            chi_tiet_loi.append(f"`{ep}` -> Lỗi: {str(e)[:40]}")
+    return False, "\n".join(chi_tiet_loi)
 
 
 def lay_1_oi_binance(sym):
-  """Lấy OI của 1 coin trên Binance Futures."""
-  url = f"https://binance.com{sym}"
-  try:
-    res = session.get(url, timeout=5)
-    if res.status_code == 200:
-      data = res.json()
-      return sym, float(data.get("openInterest", 0))
-  except Exception:
-    pass
-  return sym, 0.0
+    # Nếu đang bị dính Rate Limit thì bỏ qua ngay các luồng còn lại
+    if rate_limit_event.is_set():
+        return sym, 0.0
+
+    url = f"{ACTIVE_BASE_URL}/fapi/v1/openInterest?symbol={sym}"
+    try:
+        res = session.get(url, timeout=5)
+        if res.status_code == 200:
+            return sym, float(res.json().get("openInterest", 0))
+        if res.status_code in (418, 429):
+            rate_limit_event.set()
+    except Exception:
+        pass
+    return sym, 0.0
 
 
 def lay_toan_bo_du_lieu_binance(danh_sach_hop_le):
-  """Lấy toàn bộ Giá (1 request) + OI (đa luồng siêu tốc) trên Binance Futures."""
-  ket_qua = {}
+    ket_qua = {}
+    gia_map = {}
+    rate_limit_event.clear()
 
-  gia_map = {}
-  try:
-    res_gia = session.get(
-        "https://binance.com", timeout=8
-    )
-    if res_gia.status_code == 200:
-      for item in res_gia.json():
-        sym = item.get("symbol", "")
-        if sym in danh_sach_hop_le:
-          gia_map[sym] = float(item.get("price", 0))
-  except Exception as e:
-    print(f"Loi lay gia Binance: {e}", flush=True)
-    return ket_qua
+    try:
+        res_gia = session.get(f"{ACTIVE_BASE_URL}/fapi/v1/ticker/price", timeout=8)
+        if res_gia.status_code == 200:
+            for item in res_gia.json():
+                sym = item.get("symbol", "")
+                if sym in danh_sach_hop_le:
+                    gia_map[sym] = float(item.get("price", 0))
+        elif res_gia.status_code in (418, 429):
+            rate_limit_event.set()
+            return ket_qua
+    except Exception as e:
+        print(f"Loi lay gia: {e}", flush=True)
+        return ket_qua
 
-  cac_ma_can_quet = list(gia_map.keys())
-  with ThreadPoolExecutor(max_workers=SO_LUONG_SONG_SONG) as executor:
-    futures = [executor.submit(lay_1_oi_binance, sym) for sym in cac_ma_can_quet]
+    futures = {executor.submit(lay_1_oi_binance, sym): sym for sym in gia_map}
     for future in as_completed(futures):
-      sym, oi = future.result()
-      gia = gia_map.get(sym, 0)
-      if oi > 0 and gia > 0:
-        ket_qua[sym] = {"oi": oi, "gia": gia, "oi_usd": oi * gia}
+        sym, oi = future.result()
+        gia = gia_map.get(sym, 0)
+        if oi > 0 and gia > 0:
+            ket_qua[sym] = {"oi": oi, "gia": gia, "oi_usd": oi * gia}
 
-  return ket_qua
+    return ket_qua
 
 
 def chay_bot_canh_oi():
-  print("Khoi dong bot quet Binance Futures (30s)...", flush=True)
-  t0 = time.time()
-  du_lieu_truoc = lay_toan_bo_du_lieu_binance(DANH_SACH_ALPHA)
-  toc_do = time.time() - t0
-
-  danh_sach_ton_tai = (
-      set(du_lieu_truoc.keys()) if du_lieu_truoc else DANH_SACH_ALPHA
-  )
-
-  nguong_pt = (NGUONG_TY_LE_OI - 1) * 100
-  gui_discord(
-      f"✅ **Bot Binance Futures đã kết nối!**\n📊 Tìm thấy"
-      f" **{len(du_lieu_truoc)}/{len(DANH_SACH_ALPHA)}** coin Alpha trên"
-      f" Binance trong **{toc_do:.2f}s**\n⏱️ Chu kỳ: **{CHU_KY_QUET_GIAY}s** |"
-      f" 🎯 Ngưỡng test: **+{nguong_pt:.3f}%**"
-  )
-
-  while True:
-    # Tính thời gian ngủ bù trừ để luôn giữ chuẩn nhịp 30s
-    thoi_gian_ngu = max(1.0, CHU_KY_QUET_GIAY - toc_do)
-    time.sleep(thoi_gian_ngu)
-
-    t_quet = time.time()
-    du_lieu_moi = lay_toan_bo_du_lieu_binance(danh_sach_ton_tai)
-    toc_do = time.time() - t_quet
-
-    if not du_lieu_moi:
-      continue
-
-    if not du_lieu_truoc:
-      du_lieu_truoc = du_lieu_moi
-      continue
-
-    danh_sach_tang = []
-    for sym, info_moi in du_lieu_moi.items():
-      info_cu = du_lieu_truoc.get(sym)
-      if not info_cu or info_cu["oi"] == 0:
-        continue
-
-      ty_le_oi = info_moi["oi"] / info_cu["oi"]
-      if ty_le_oi >= NGUONG_TY_LE_OI:
-        pt_oi = (ty_le_oi - 1) * 100
-        pt_gia = (
-            ((info_moi["gia"] / info_cu["gia"]) - 1) * 100
-            if info_cu["gia"] > 0
-            else 0
+    ok, thong_bao = kiem_tra_ket_noi_binance()
+    if not ok:
+        gui_discord(
+            f"🚨 **BINANCE TỪ CHỐI KẾT NỐI:**\n{thong_bao}\n\n"
+            "👉 *IP Server có thể đang bị Binance chặn vùng (US/Cloud).*"
         )
-        oi_usd_m = info_moi["oi_usd"] / 1_000_000
-        danh_sach_tang.append((pt_oi, pt_gia, oi_usd_m, sym))
+        return
 
-    danh_sach_tang.sort(key=lambda x: x[0], reverse=True)
-    top_5 = danh_sach_tang[:SO_COIN_TOI_DA]
+    t0 = time.time()
+    du_lieu_truoc = lay_toan_bo_du_lieu_binance(DANH_SACH_ALPHA)
+    toc_do = time.time() - t0
 
-    if top_5:
-      dong_tin = [
-          f"• **{sym}**: OI `+{pt_oi:.3f}%` | Giá `{pt_gia:+.2f}%` | Tổng OI:"
-          f" `${oi_usd_m:.2f}M`"
-          for pt_oi, pt_gia, oi_usd_m, sym in top_5
-      ]
-      gui_discord(
-          f"🟡 **BINANCE TOP {len(top_5)} TĂNG OI ({CHU_KY_QUET_GIAY}s)** — Tổng"
-          f" {len(danh_sach_tang)} mã vượt ngưỡng *(Quét {toc_do:.2f}s)*:\n"
-          + "\n".join(dong_tin)
-      )
+    danh_sach_ton_tai = set(du_lieu_truoc.keys()) if du_lieu_truoc else DANH_SACH_ALPHA
+    nguong_pt = (NGUONG_TY_LE_OI - 1) * 100
 
-    du_lieu_truoc = du_lieu_moi
+    gui_discord(
+        f"✅ **Bot Binance Futures đã kết nối!** ({thong_bao})\n"
+        f"📊 Tìm thấy **{len(du_lieu_truoc)}/{len(DANH_SACH_ALPHA)}** coin Alpha trong **{toc_do:.2f}s**\n"
+        f"⏱️ Chu kỳ: **{CHU_KY_QUET_GIAY}s** | 🎯 Ngưỡng cảnh báo: **+{nguong_pt:.3f}%**"
+    )
 
+    while True:
+        thoi_gian_ngu = max(1.0, CHU_KY_QUET_GIAY - toc_do)
+        time.sleep(thoi_gian_ngu)
 
-def khoi_dong_an_toan():
-  try:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("127.0.0.1", 47291))
-    app.config["BOT_LOCK_SOCKET"] = s
-    threading.Thread(target=chay_bot_canh_oi, daemon=True).start()
-  except socket.error:
-    pass
+        t_quet = time.time()
+        du_lieu_moi = lay_toan_bo_du_lieu_binance(danh_sach_ton_tai)
+        toc_do = time.time() - t_quet
 
+        # Xử lý khi bị Rate Limit
+        if rate_limit_event.is_set():
+            print("⚠️ Dinh Rate Limit Binance, nghi 60s...", flush=True)
+            time.sleep(60)
+            continue
 
-khoi_dong_an_toan()
+        if not du_lieu_moi or not du_lieu_truoc:
+            if du_lieu_moi:
+                du_lieu_truoc = du_lieu_moi
+            continue
 
-if __name__ == "__main__":
-  port = int(os.environ.get("PORT", 10000))
-  app.run(host="0.0.0.0", port=port)
+        danh_sach_tang = []
+        for sym, info_moi in du_lieu_moi.items():
+            info_cu = du_lieu_truoc.get(sym)
+            if not info_cu or info_cu["oi"] <= 0:
+                continue
+
+            ty_le_oi = info_moi["oi"] / info_cu["oi"]
+            if ty_le_oi >= NGUONG_TY_LE_OI:
+                pt_oi = (ty_le_oi - 1) * 100
+                pt_gia = ((info_moi["gia"] / info_cu["gia"]) - 1) * 100
+                chenh_usd = info_moi["oi_usd"] - info_cu["oi_usd"]
+
+                danh_sach_tang.append({
+                    "sym": sym,
+                    "pt_oi": pt_oi,
+                    "pt_gia": pt_gia,
+                    "gia": info_moi["gia"],
+                    "oi_usd": info_moi["oi_usd"],
+                    "chenh_usd": chenh_usd,
+                })
