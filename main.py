@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
-PROXY_URL = "curl --proxy "http://cpethehk:viqqd5yyfxwr@64.137.10.153:5803/" https://ipv4.webshare.io/"
+PROXY_URL = "http://cpethehk:viqqd5yyfxwr@64.137.10.153:5803/"
 TIMEFRAME = "5m"
 MIN_OI_CHANGE = 0.001
 SCAN_INTERVAL = 300
