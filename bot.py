@@ -1,4 +1,3 @@
-import concurrent.futures
 import os
 import threading
 import time
@@ -8,7 +7,7 @@ import requests
 # Dán link Webhook Discord của bạn vào giữa 2 dấu ngoặc kép bên dưới
 WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
-NGUONG_TY_LE_OI = 1.021
+NGUONG_TY_LE_OI = 1.0001
 TEN_SAN = "binance" + ".com"
 DOMAIN_WEB = "https://www." + TEN_SAN
 DOMAIN_FAPI = "https://fapi." + TEN_SAN
@@ -393,22 +392,5 @@ def chay_bot_canh_oi():
 
       if (oi_moi / oi_cu) >= NGUONG_TY_LE_OI:
         coin_dang_theo_doi_giam.add(sym)
-        coin_tang.append(f"{sym} (+{((oi_moi / oi_cu) - 1) * 100:.2f}%)")
-      elif sym in coin_dang_theo_doi_giam and oi_moi < oi_cu:
-        coin_dang_theo_doi_giam.remove(sym)
-        coin_giam.append(f"{sym} ({((oi_moi / oi_cu) - 1) * 100:.2f}%)")
-
-    if coin_tang:
-      gui_discord("🚀 **OI Tăng mạnh:** " + ", ".join(coin_tang))
-
-    if coin_giam:
-      gui_discord("📉 **OI Quay đầu giảm:** " + ", ".join(coin_giam))
-
-    oi_phut_truoc = oi_hien_tai
-
-
-threading.Thread(target=chay_bot_canh_oi, daemon=True).start()
-
-if __name__ == "__main__":
-  port = int(os.environ.get("PORT", 10000))
-  app.run(host="0.0.0.0", port=port)
+        coin_tang.append(sym)
+      elif sym in coin_dang_theo_doi_giam and oi_moi < oi_
