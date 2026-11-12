@@ -9,7 +9,7 @@ from requests.adapters import HTTPAdapter
 # ==========================================
 # 1. CAU HINH BOT (DAN LINK DISCORD O DONG DUOI)
 # ==========================================
-WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
+WEBHOOK_URL = "DAN_LINK_WEBHOOK_DISCORD_CUA_BAN_VAO_DAY"
 
 NGUONG_TY_LE_OI = 1.0001
 CHU_KY_QUET_GIAY = 30
@@ -17,10 +17,10 @@ SO_COIN_TOI_DA = 5
 SO_LUONG_SONG_SONG = 10
 
 BINANCE_ENDPOINTS = [
-    "https://binance.com",
-    "https://binance.com",
-    "https://binance.com",
-    "https://binance.com",
+    "https://fapi.binance.com",
+    "https://fapi1.binance.com",
+    "https://fapi2.binance.com",
+    "https://fapi3.binance.com",
 ]
 current_ep_idx = 0
 
@@ -208,50 +208,48 @@ def chay_bot_canh_oi():
     danh_sach_ton_tai = set(du_lieu_truoc.keys())
 
     gui_discord(
-        f"**Bot Canh OI Khoi Dong Thanh Cong!**\n"
-        f"- Endpoint: `{get_base_url()}`\n"
-        f"- Theo doi: **{len(danh_sach_ton_tai)}/{len(DANH_SACH_ALPHA)}** coin\n"
-        f"- Toc do quet: **{toc_do:.2f}s**"
+        f"**BOT CANH OI DA KHOI DONG!**\n"
+        f"{thong_bao}\n"
+        f"Dang theo doi **{len(danh_sach_ton_tai)}** coin (Quet mat {toc_do:.2f}s)"
     )
 
     while True:
-        thoi_gian_cho = max(1.0, CHU_KY_QUET_GIAY - (time.time() - t0))
-        time.sleep(thoi_gian_cho)
-
-        t0 = time.time()
-        du_lieu_moi = lay_toan_bo_du_lieu_binance(danh_sach_ton_tai)
-
-        if rate_limit_event.is_set():
-            new_ep = switch_base_url()
-            print(f"Dinh Rate Limit! Chuyen sang {new_ep} va nghi 60s...", flush=True)
-            time.sleep(60)
-            continue
-
-        if not du_lieu_moi:
+        time.sleep(CHU_KY_QUET_GIAY)
+        du_lieu_hien_tai = lay_toan_bo_du_lieu_binance(danh_sach_ton_tai)
+        if not du_lieu_hien_tai:
             continue
 
         bien_dong = []
-        for sym, moi in du_lieu_moi.items():
-            truoc = du_lieu_truoc.get(sym)
-            if not truoc or truoc["oi"] <= 0:
-                continue
-
-            ty_le_oi = moi["oi"] / truoc["oi"]
-            if ty_le_oi >= NGUONG_TY_LE_OI:
-                phan_tram_oi = (ty_le_oi - 1) * 100
-                phan_tram_gia = ((moi["gia"] / truoc["gia"]) - 1) * 100
-                chenh_lech_usd = moi["oi_usd"] - truoc["oi_usd"]
-                bien_dong.append({
-                    "sym": sym,
-                    "phan_tram_oi": phan_tram_oi,
-                    "phan_tram_gia": phan_tram_gia,
-                    "oi_usd": moi["oi_usd"],
-                    "chenh_lech_usd": chenh_lech_usd,
-                    "gia": moi["gia"],
-                })
+        for sym, cur in du_lieu_hien_tai.items():
+            prev = du_lieu_truoc.get(sym)
+            if prev and prev["oi"] > 0:
+                ty_le_oi = cur["oi"] / prev["oi"]
+                if ty_le_oi >= NGUONG_TY_LE_OI:
+                    phan_tram_oi = (ty_le_oi - 1) * 100
+                    phan_tram_gia = ((cur["gia"] / prev["gia"]) - 1) * 100
+                    bien_dong.append({
+                        "sym": sym,
+                        "ty_le_oi": ty_le_oi,
+                        "phan_tram_oi": phan_tram_oi,
+                        "phan_tram_gia": phan_tram_gia,
+                        "oi_usd": cur["oi_usd"],
+                        "gia": cur["gia"],
+                    })
 
         if bien_dong:
             bien_dong.sort(key=lambda x: x["phan_tram_oi"], reverse=True)
             top_coins = bien_dong[:SO_COIN_TOI_DA]
-            dong_tin = [f"**BIEN DONG OI ({CHU_KY_QUET_GIAY}s)** | Quet mat `{time.time() - t0:.2f}s`"]
+
+            lines = [f"**CANH BAO OI TANG DOT BIEN ({CHU_KY_QUET_GIAY}s):**"]
+            # Da sua loi thut le (IndentationError) o vong lap nay:
             for idx, c in enumerate(top_coins, 1):
+                lines.append(
+                    f"{idx}. **{c['sym']}** | OI: **+{c['phan_tram_oi']:.2f}%** ({format_usd(c['oi_usd'])}) "
+                    f"| Gia: `{c['gia']}` ({c['phan_tram_gia']:+.2f}%)"
+                )
+            gui_discord("\n".join(lines))
+
+        du_lieu_truoc = du_lieu_hien_tai
+
+
+def khoi_dong_bot_ngam():
