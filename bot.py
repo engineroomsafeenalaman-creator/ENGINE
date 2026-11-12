@@ -5,15 +5,23 @@ import time
 from flask import Flask
 import requests
 
-# Dán link Webhook mới nhất của bot ENGINE 3 vào giữa 2 dấu ngoặc kép
+# Dán link Webhook Discord của bạn vào giữa 2 dấu ngoặc kép bên dưới
 WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
 NGUONG_TY_LE_OI = 1.00005
 DOMAIN_WEB = "https://www." + "binance.com"
-DOMAIN_FAPI = "https://fapi." + "binance.com"
+# Danh sách các cổng máy chủ Futures dự phòng của Binance
+CAC_CONG_FAPI = [
+    "https://fapi." + "binance.com",
+    "https://fapi1." + "binance.com",
+    "https://fapi2." + "binance.com",
+    "https://fapi3." + "binance.com",
+    "https://fapi4." + "binance.com",
+]
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 app = Flask(__name__)
+CONG_FAPI_CHUAN = CAC_CONG_FAPI[0]
 
 
 @app.route("/")
@@ -30,6 +38,7 @@ def gui_discord(noi_dung):
 
 
 def lay_danh_sach_coin_alpha_futures():
+  global CONG_FAPI_CHUAN
   try:
     path_alpha = (
         "/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
@@ -45,24 +54,35 @@ def lay_danh_sach_coin_alpha_futures():
     }
     print(f"Lấy được {len(alpha_symbols)} token Alpha", flush=True)
 
-    res_prices = requests.get(
-        DOMAIN_FAPI + "/fapi/v1/ticker/price", headers=HEADERS, timeout=15
-    ).json()
+    # Thử lần lượt từng cổng fapi để tìm cổng không bị chặn
+    for cong in CAC_CONG_FAPI:
+      try:
+        res_prices = requests.get(
+            cong + "/fapi/v1/ticker/price", headers=HEADERS, timeout=10
+        ).json()
+        if isinstance(res_prices, list) and len(res_prices) > 0:
+          CONG_FAPI_CHUAN = cong
+          print(f"Kết nối thành công qua cổng: {cong}", flush=True)
+          danh_sach = [
+              item["symbol"]
+              for item in res_prices
+              if item.get("symbol", "").endswith("USDT")
+              and item["symbol"][:-4] in alpha_symbols
+          ]
+          return danh_sach
+        else:
+          print(f"Cổng {cong} trả về: {res_prices}", flush=True)
+      except Exception as e:
+        print(f"Lỗi thử cổng {cong}: {e}", flush=True)
 
-    danh_sach = []
-    if isinstance(res_prices, list):
-      for item in res_prices:
-        sym = item.get("symbol", "")
-        if sym.endswith("USDT") and sym[:-4] in alpha_symbols:
-          danh_sach.append(sym)
-    return danh_sach
+    return []
   except Exception as e:
-    print(f"Lỗi lấy danh sách coin: {e}", flush=True)
+    print(f"Lỗi tổng: {e}", flush=True)
     return []
 
 
 def lay_oi_1_coin(symbol):
-  url = DOMAIN_FAPI + f"/fapi/v1/openInterest?symbol={symbol}"
+  url = CONG_FAPI_CHUAN + f"/fapi/v1/openInterest?symbol={symbol}"
   try:
     res = requests.get(url, headers=HEADERS, timeout=5).json()
     return symbol, float(res["openInterest"])
@@ -86,7 +106,6 @@ def chay_bot_canh_oi():
   danh_sach_alpha = lay_danh_sach_coin_alpha_futures()
   print(f"✅ Đã sẵn sàng quét {len(danh_sach_alpha)} coin Alpha...", flush=True)
 
-  # Gửi 1 tin ngắn xác nhận kết nối Discord thông suốt
   gui_discord(
       f"✅ Bot đã kết nối và đang quét **{len(danh_sach_alpha)}** coin Alpha!"
   )
