@@ -253,3 +253,17 @@ def chay_bot_canh_oi():
 
 
 def khoi_dong_bot_ngam():
+global _bot_started
+with _start_lock:
+if not _bot_started:
+_bot_started = True
+t = threading.Thread(target=chay_bot_canh_oi, daemon=True)
+t.start()
+@app.route("/")
+def health_check():
+khoi_dong_bot_ngam()
+return "Bot canh OI dang hoat dong!", 200
+if name == "main":
+khoi_dong_bot_ngam()
+port = int(os.environ.get("PORT", 10000))
+app.run(host="0.0.0.0", port=port)
