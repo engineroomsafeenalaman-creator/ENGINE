@@ -3,8 +3,10 @@ import time
 import requests
 from datetime import datetime, timezone
 
-# 1. DÁN LINK DISCORD WEBHOOK CỦA BẠN VÀO DÒNG DƯỚI ĐÂY:
+# 1. THÔNG TIN CẤU HÌNH CỦA BẠN:
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1570759626285125753/VTk9ScV2fGroZbp8MZMogLsoK0i8oq62oasdm8I22D8g0QLLXx2icna-M9xuuvZ6fhTl"
+DISCORD_BOT_TOKEN = "MTU3MDc4NDk5NzgxMDUxMTk2Mg.GHNpFa.dDMokpqRM0RKi5HY6rNf5P3agixVDT3nSKBfwc"
+DISCORD_CHANNEL_ID = "1570759584119914558"
 
 COIN_FILE = "coin.txt"
 DEFAULT_COIN = "BTCUSDT"
@@ -13,6 +15,45 @@ MIN_OI_CHANGE = 0.2
 BINANCE_ENDPOINTS = [
     "https://binance.com"
 ]
+
+def check_discord_coin_command():
+    """Đọc 5 tin nhắn gần nhất trên kênh Discord xem có lệnh !coin không"""
+    if "DÁN_" in DISCORD_BOT_TOKEN or "DÁN_" in DISCORD_CHANNEL_ID:
+        return
+
+    url = f"https://discord.com{DISCORD_CHANNEL_ID}/messages?limit=5"
+    headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+
+    try:
+        res = requests.get(url, headers=headers, timeout=8)
+        if res.status_code == 200:
+            messages = res.json()
+            for msg in messages:
+                content = msg.get("content", "").strip()
+                if content.lower().startswith("!coin "):
+                    new_coin = content.split(" ", 1).strip().upper()
+                    if not new_coin.endswith("USDT"):
+                        new_coin += "USDT"
+
+                    # Đọc coin hiện tại trong file để so sánh
+                    current_coin = ""
+                    if os.path.exists(COIN_FILE):
+                        with open(COIN_FILE, "r", encoding="utf-8") as f:
+                            current_coin = f.read().strip().upper()
+
+                    # Nếu khác coin hiện tại thì cập nhật file và báo lại lên Discord
+                    if new_coin and new_coin != current_coin:
+                        with open(COIN_FILE, "w", encoding="utf-8") as f:
+                            f.write(new_coin)
+                        print(f"🔄 Đã nhận lệnh từ Discord: Đổi coin sang {new_coin}")
+                        requests.post(
+                            DISCORD_WEBHOOK_URL,
+                            json={"content": f"✅ Đã nhận lệnh! Chuyển sang theo dõi **{new_coin}**."},
+                            timeout=8
+                        )
+                    break  # Chỉ lấy lệnh !coin mới nhất
+    except Exception as e:
+        print(f"Lỗi đọc lệnh Discord: {e}")
 
 def get_coin():
     if os.path.exists(COIN_FILE):
@@ -99,6 +140,7 @@ def send_discord(symbol, start_oi, end_oi, change_pct, start_vol, end_vol, sourc
         return False
 
 def main():
+    check_discord_coin_command()
     symbol = get_coin()
     last_state = None
     print(f"🚀 Bắt đầu chạy Binance OI Radar cho {symbol}...")
@@ -123,9 +165,9 @@ def main():
                 time.sleep(10)
 
         if len(samples) >= 2:
-            start_oi = samples[0]
+            start_oi = samples
             end_oi = samples[-1]
-            start_vol = vol_samples[0]
+            start_vol = vol_samples
             end_vol = vol_samples[-1]
 
             if start_oi > 0:
