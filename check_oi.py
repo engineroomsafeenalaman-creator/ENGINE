@@ -4,7 +4,7 @@ import requests
 from datetime import datetime, timezone
 
 # 1. DÁN LINK DISCORD WEBHOOK CỦA BẠN VÀO DÒNG DƯỚI ĐÂY:
-DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1570759626285125753/VTk9ScV2fGroZbp8MZMogLsoK0i8oq62oasdm8I22D8g0QLLXx2icna-M9xuuvZ6fhTl"
 
 COIN_FILE = "coin.txt"
 DEFAULT_COIN = "BTCUSDT"
