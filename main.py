@@ -15,7 +15,7 @@ from flask import Flask, jsonify
 # ==========================================
 
 # Dán trực tiếp link Discord Webhook của bạn vào đây:
-DISCORD_WEBHOOK_URL = "https://discord.com"
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
 COIN_CONFIG_FILE = "coin.txt"   # Tệp chứa tên coin muốn theo dõi
 DEFAULT_COIN = "BTCUSDT"        # Coin mặc định nếu chưa tạo tệp coin.txt
