@@ -5,12 +5,12 @@ from datetime import datetime, timezone
 
 # 1. THÔNG TIN CẤU HÌNH CỦA BẠN:
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1570759626285125753/VTk9ScV2fGroZbp8MZMogLsoK0i8oq62oasdm8I22D8g0QLLXx2icna-M9xuuvZ6fhTl"
-DISCORD_BOT_TOKEN = "MTU3MDc4NDk5NzgxMDUxMTk2Mg.GpgjVZ.xSJQdzbItadr8TzU0ZrCsdeoPEzlUGayaj0G0E"
+DISCORD_BOT_TOKEN = os.environ.get("EK", "")
 DISCORD_CHANNEL_ID = "1570759584119914558"
 
 COIN_FILE = "coin.txt"
 DEFAULT_COIN = "BTCUSDT"
-MIN_OI_CHANGE = 0.001
+MIN_OI_CHANGE = 0.5
 
 BINANCE_ENDPOINTS = [
     "https://binance.com"
@@ -18,7 +18,7 @@ BINANCE_ENDPOINTS = [
 
 def check_discord_coin_command():
     """Đọc 5 tin nhắn gần nhất trên kênh Discord xem có lệnh !coin không"""
-    if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID or "DÁN_" in DISCORD_BOT_TOKEN:
+    if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID:
         return
 
     api_path = "/api/v10/channels/"
@@ -34,7 +34,7 @@ def check_discord_coin_command():
                 if content.lower().startswith("!coin "):
                     parts = content.split(" ", 1)
                     if len(parts) > 1:
-                        new_coin = parts.strip().upper()
+                        new_coin = parts[1].strip().upper()
                         if not new_coin.endswith("USDT"):
                             new_coin += "USDT"
 
@@ -176,9 +176,9 @@ def main():
                 time.sleep(10)
 
         if len(samples) >= 2:
-            start_oi = samples
+            start_oi = samples[0]
             end_oi = samples[-1]
-            start_vol = vol_samples if len(vol_samples) >= 1 else None
+            start_vol = vol_samples[0] if len(vol_samples) >= 1 else None
             end_vol = vol_samples[-1] if len(vol_samples) >= 2 else None
 
             if start_oi > 0:
