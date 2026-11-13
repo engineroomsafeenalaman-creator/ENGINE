@@ -82,8 +82,6 @@ def send_discord(symbol, start_oi, end_oi, change_pct, start_vol, end_vol, sourc
             "fields": [
                 {"name": "Biến động OI (%)", "value": f"`{change_pct:+.5f}%`", "inline": True},
                 {"name": f"Chênh lệch OI ({base_asset})", "value": f"`{diff:+,.3f} {base_asset}`", "inline": True},
-                {"name": "OI Đầu Phút", "value": f"`{start_oi:,.3f} {base_asset}`", "inline": False},
-                {"name": "OI Cuối Phút", "value": f"`{end_oi:,.3f} {base_asset}`", "inline": False},
                 {"name": "Biến động Vol (%)", "value": vol_pct_text, "inline": True},
                 {"name": f"Chênh lệch Vol ({base_asset})", "value": vol_diff_text, "inline": True}
             ],
