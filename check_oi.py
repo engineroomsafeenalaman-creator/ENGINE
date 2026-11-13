@@ -66,20 +66,26 @@ def send_discord(symbol, start_oi, end_oi, change_pct, start_vol, end_vol, sourc
     direction = "TĂNG VƯỢT NGƯỠNG 🟢" if change_pct > 0 else "GIẢM VƯỢT NGƯỠNG 🔴"
     color = 5763719 if change_pct > 0 else 15548997
 
-    start_vol_text = f"`{start_vol:,.3f} {base_asset}`" if start_vol is not None else "`N/A`"
-    end_vol_text = f"`{end_vol:,.3f} {base_asset}`" if end_vol is not None else "`N/A`"
+    if start_vol is not None and end_vol is not None and start_vol > 0:
+        vol_diff = end_vol - start_vol
+        vol_change_pct = (vol_diff / start_vol) * 100
+        vol_pct_text = f"`{vol_change_pct:+.5f}%`"
+        vol_diff_text = f"`{vol_diff:+,.3f} {base_asset}`"
+    else:
+        vol_pct_text = "`N/A`"
+        vol_diff_text = "`N/A`"
 
     payload = {
         "embeds": [{
             "title": f"🚨 BINANCE OI {symbol} ({direction})",
             "color": color,
             "fields": [
-                {"name": "Biến động (%)", "value": f"`{change_pct:+.5f}%`", "inline": True},
-                {"name": f"Chênh lệch ({base_asset})", "value": f"`{diff:+,.3f} {base_asset}`", "inline": True},
+                {"name": "Biến động OI (%)", "value": f"`{change_pct:+.5f}%`", "inline": True},
+                {"name": f"Chênh lệch OI ({base_asset})", "value": f"`{diff:+,.3f} {base_asset}`", "inline": True},
                 {"name": "OI Đầu Phút", "value": f"`{start_oi:,.3f} {base_asset}`", "inline": False},
                 {"name": "OI Cuối Phút", "value": f"`{end_oi:,.3f} {base_asset}`", "inline": False},
-                {"name": "Vol Đầu Phút", "value": start_vol_text, "inline": True},
-                {"name": "Vol Cuối Phút", "value": end_vol_text, "inline": True}
+                {"name": "Biến động Vol (%)", "value": vol_pct_text, "inline": True},
+                {"name": f"Chênh lệch Vol ({base_asset})", "value": vol_diff_text, "inline": True}
             ],
             "footer": {"text": f"Nguồn: {source} | GitHub Actions"},
             "timestamp": datetime.now(timezone.utc).isoformat()
@@ -111,18 +117,16 @@ def main():
                 samples.append(oi)
                 vol_samples.append(vol)
                 used_source = src
-                vol_log = f"{vol:,.3f}" if vol is not None else "N/A"
-                print(f"  [Phút {cycle} - Mẫu {step+1}/7] OI: {oi:,.3f} | Vol: {vol_log}")
+                print(f"  [Phút {cycle} - Mẫu {step+1}/7] OI: {oi:,.3f}")
             else:
                 print(f"  [Phút {cycle} - Mẫu {step+1}/7] Không lấy được dữ liệu!")
 
             if step < 6:
                 time.sleep(10)
 
-        # Kiểm tra đã lấy đủ dữ liệu chưa
         if len(samples) >= 2:
-            start_oi = samples[0]   # Mẫu đầu tiên của phút
-            end_oi = samples[-1]    # Mẫu cuối cùng của phút
+            start_oi = samples[0]
+            end_oi = samples[-1]
             start_vol = vol_samples[0]
             end_vol = vol_samples[-1]
 
