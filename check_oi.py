@@ -11,7 +11,7 @@ DEFAULT_COIN = "BTCUSDT"
 MIN_OI_CHANGE = 0.5
 
 BINANCE_ENDPOINTS = [
-    "https://www.binance.com/en/futures/OUSDT"
+    "https://www.binance.com/en/futures/BTCUSDT"
 ]
 
 def get_coin():
@@ -39,7 +39,26 @@ def get_binance_oi(symbol):
             print(f"Lỗi kết nối {base_url}: {e}")
     return None, None
 
-def send_discord(symbol, start_oi, end_oi, change_pct, source):
+def get_binance_vol(symbol):
+    for base_url in BINANCE_ENDPOINTS:
+        try:
+            res = requests.get(
+                f"{base_url}/fapi/v1/klines",
+                params={"symbol": symbol, "interval": "1m", "limit": 2},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=8
+            )
+            if res.status_code == 200:
+                data = res.json()
+                if isinstance(data, list) and len(data) >= 2:
+                    vol_before = float(data[0][5])  # Volume nến 1 phút trước
+                    vol_after = float(data[1][5])   # Volume nến 1 phút hiện tại (sau 1 phút)
+                    return vol_before, vol_after
+        except Exception as e:
+            print(f"Lỗi kết nối Vol {base_url}: {e}")
+    return None, None
+
+def send_discord(symbol, start_oi, end_oi, change_pct, vol_before, vol_after, source):
     if not DISCORD_WEBHOOK_URL or "YOUR_WEBHOOK_ID" in DISCORD_WEBHOOK_URL:
         print("❌ LỖI: Bạn chưa dán link Discord Webhook vào dòng số 7!")
         return False
@@ -49,6 +68,9 @@ def send_discord(symbol, start_oi, end_oi, change_pct, source):
     direction = "TĂNG VƯỢT NGƯỠNG 🟢" if change_pct > 0 else "GIẢM VƯỢT NGƯỠNG 🔴"
     color = 5763719 if change_pct > 0 else 15548997
 
+    vol_before_text = f"`{vol_before:,.3f} {base_asset}`" if vol_before is not None else "`N/A`"
+    vol_after_text = f"`{vol_after:,.3f} {base_asset}`" if vol_after is not None else "`N/A`"
+
     payload = {
         "embeds": [{
             "title": f"🚨 BINANCE OI {symbol} ({direction})",
@@ -57,7 +79,9 @@ def send_discord(symbol, start_oi, end_oi, change_pct, source):
                 {"name": "Biến động (%)", "value": f"`{change_pct:+.5f}%`", "inline": True},
                 {"name": f"Chênh lệch ({base_asset})", "value": f"`{diff:+,.3f} {base_asset}`", "inline": True},
                 {"name": "OI Đầu Phút", "value": f"`{start_oi:,.3f} {base_asset}`", "inline": False},
-                {"name": "OI Cuối Phút", "value": f"`{end_oi:,.3f} {base_asset}`", "inline": False}
+                {"name": "OI Cuối Phút", "value": f"`{end_oi:,.3f} {base_asset}`", "inline": False},
+                {"name": "Vol Trước 1 Phút", "value": vol_before_text, "inline": True},
+                {"name": "Vol Sau 1 Phút", "value": vol_after_text, "inline": True}
             ],
             "footer": {"text": f"Nguồn: {source} | GitHub Actions"},
             "timestamp": datetime.now(timezone.utc).isoformat()
@@ -103,10 +127,12 @@ def main():
                 print(f"📊 [Chốt Phút {cycle}] Đầu: {start_oi:,.3f} | Cuối: {end_oi:,.3f} | Biến động: {change_pct:+.5f}%")
 
                 if change_pct > MIN_OI_CHANGE and last_state != "UP":
-                    if send_discord(symbol, start_oi, end_oi, change_pct, used_source):
+                    vol_before, vol_after = get_binance_vol(symbol)
+                    if send_discord(symbol, start_oi, end_oi, change_pct, vol_before, vol_after, used_source):
                         last_state = "UP"
                 elif change_pct < -MIN_OI_CHANGE and last_state != "DOWN":
-                    if send_discord(symbol, start_oi, end_oi, change_pct, used_source):
+                    vol_before, vol_after = get_binance_vol(symbol)
+                    if send_discord(symbol, start_oi, end_oi, change_pct, vol_before, vol_after, used_source):
                         last_state = "DOWN"
 
         samples.clear()
