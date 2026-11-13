@@ -10,7 +10,7 @@ DISCORD_CHANNEL_ID = "1570759584119914558"
 
 COIN_FILE = "coin.txt"
 DEFAULT_COIN = "BTCUSDT"
-MIN_OI_CHANGE = 0.001
+MIN_OI_CHANGE = 0.5
 
 BINANCE_ENDPOINTS = [
     "https://binance.com"
@@ -51,7 +51,9 @@ def check_discord_coin_command():
                                 json={"content": f"✅ Đã nhận lệnh! Chuyển sang theo dõi **{new_coin}**."},
                                 timeout=8
                             )
-                        break  # Chỉ lấy lệnh !coin mới nhất
+                        break
+        else:
+            print(f"⚠️ Discord API trả về mã {res.status_code}: {res.text}")
     except Exception as e:
         print(f"Lỗi đọc lệnh Discord: {e}")
 
@@ -99,7 +101,7 @@ def get_binance_vol(symbol):
 
 def send_discord(symbol, start_oi, end_oi, change_pct, start_vol, end_vol, source):
     if not DISCORD_WEBHOOK_URL or "YOUR_WEBHOOK_ID" in DISCORD_WEBHOOK_URL:
-        print("❌ LỖI: Bạn chưa dán link Discord Webhook vào dòng số 7!")
+        print("❌ LỖI: Bạn chưa dán link Discord Webhook!")
         return False
 
     base_asset = symbol.replace("USDT", "")
@@ -146,7 +148,6 @@ def main():
     print(f"🚀 Bắt đầu chạy Binance OI Radar cho {symbol}...")
 
     for cycle in range(1, 55):
-        # Kiểm tra lệnh đổi coin từ Discord ở đầu mỗi phút
         check_discord_coin_command()
         new_symbol = get_coin()
         if new_symbol != symbol:
@@ -163,7 +164,6 @@ def main():
             if oi is not None:
                 samples.append(oi)
                 used_source = src
-                # Chỉ lấy Vol ở mẫu đầu (0) và mẫu cuối (6) cho nhẹ và nhanh
                 if step == 0 or step == 6:
                     vol = get_binance_vol(symbol)
                     vol_samples.append(vol)
@@ -174,10 +174,9 @@ def main():
             if step < 6:
                 time.sleep(10)
 
-        # Kiểm tra đã lấy đủ dữ liệu chưa
         if len(samples) >= 2:
-            start_oi = samples[0]   # Mẫu đầu tiên của phút
-            end_oi = samples[-1]    # Mẫu cuối cùng của phút
+            start_oi = samples[0]
+            end_oi = samples[-1]
             start_vol = vol_samples[0] if len(vol_samples) >= 1 else None
             end_vol = vol_samples[-1] if len(vol_samples) >= 2 else None
 
