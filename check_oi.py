@@ -10,7 +10,7 @@ DISCORD_CHANNEL_ID = "1570759584119914558"
 
 COIN_FILE = "coin.txt"
 DEFAULT_COIN = "BTCUSDT"
-MIN_OI_CHANGE = 0.2
+MIN_OI_CHANGE = 0.5
 
 BINANCE_ENDPOINTS = [
     "https://binance.com"
@@ -18,7 +18,7 @@ BINANCE_ENDPOINTS = [
 
 def check_discord_coin_command():
     """Đọc 5 tin nhắn gần nhất trên kênh Discord xem có lệnh !coin không"""
-    if "DÁN_" in DISCORD_BOT_TOKEN or "DÁN_" in DISCORD_CHANNEL_ID:
+    if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID or "DÁN_" in DISCORD_BOT_TOKEN:
         return
 
     url = f"https://discord.com{DISCORD_CHANNEL_ID}/messages?limit=5"
@@ -31,27 +31,27 @@ def check_discord_coin_command():
             for msg in messages:
                 content = msg.get("content", "").strip()
                 if content.lower().startswith("!coin "):
-                    new_coin = content.split(" ", 1).strip().upper()
-                    if not new_coin.endswith("USDT"):
-                        new_coin += "USDT"
+                    parts = content.split(" ", 1)
+                    if len(parts) > 1:
+                        new_coin = parts[1].strip().upper()
+                        if not new_coin.endswith("USDT"):
+                            new_coin += "USDT"
 
-                    # Đọc coin hiện tại trong file để so sánh
-                    current_coin = ""
-                    if os.path.exists(COIN_FILE):
-                        with open(COIN_FILE, "r", encoding="utf-8") as f:
-                            current_coin = f.read().strip().upper()
+                        current_coin = ""
+                        if os.path.exists(COIN_FILE):
+                            with open(COIN_FILE, "r", encoding="utf-8") as f:
+                                current_coin = f.read().strip().upper()
 
-                    # Nếu khác coin hiện tại thì cập nhật file và báo lại lên Discord
-                    if new_coin and new_coin != current_coin:
-                        with open(COIN_FILE, "w", encoding="utf-8") as f:
-                            f.write(new_coin)
-                        print(f"🔄 Đã nhận lệnh từ Discord: Đổi coin sang {new_coin}")
-                        requests.post(
-                            DISCORD_WEBHOOK_URL,
-                            json={"content": f"✅ Đã nhận lệnh! Chuyển sang theo dõi **{new_coin}**."},
-                            timeout=8
-                        )
-                    break  # Chỉ lấy lệnh !coin mới nhất
+                        if new_coin and new_coin != current_coin:
+                            with open(COIN_FILE, "w", encoding="utf-8") as f:
+                                f.write(new_coin)
+                            print(f"🔄 Đã nhận lệnh từ Discord: Đổi coin sang {new_coin}")
+                            requests.post(
+                                DISCORD_WEBHOOK_URL,
+                                json={"content": f"✅ Đã nhận lệnh! Chuyển sang theo dõi **{new_coin}**."},
+                                timeout=8
+                            )
+                        break  # Chỉ lấy lệnh !coin mới nhất
     except Exception as e:
         print(f"Lỗi đọc lệnh Discord: {e}")
 
@@ -145,18 +145,28 @@ def main():
     last_state = None
     print(f"🚀 Bắt đầu chạy Binance OI Radar cho {symbol}...")
 
-    for cycle in range(1, 5):
+    for cycle in range(1, 55):
+        # Kiểm tra lệnh đổi coin từ Discord ở đầu mỗi phút
+        check_discord_coin_command()
+        new_symbol = get_coin()
+        if new_symbol != symbol:
+            symbol = new_symbol
+            last_state = None
+            print(f"🔄 Đã chuyển sang theo dõi đồng mới: {symbol}")
+
         samples = []
         vol_samples = []
         used_source = ""
 
         for step in range(7):
             oi, src = get_binance_oi(symbol)
-            vol = get_binance_vol(symbol)
             if oi is not None:
                 samples.append(oi)
-                vol_samples.append(vol)
                 used_source = src
+                # Chỉ lấy Vol ở mẫu đầu (0) và mẫu cuối (6) cho nhẹ và nhanh
+                if step == 0 or step == 6:
+                    vol = get_binance_vol(symbol)
+                    vol_samples.append(vol)
                 print(f"  [Phút {cycle} - Mẫu {step+1}/7] OI: {oi:,.3f}")
             else:
                 print(f"  [Phút {cycle} - Mẫu {step+1}/7] Không lấy được dữ liệu!")
@@ -164,11 +174,12 @@ def main():
             if step < 6:
                 time.sleep(10)
 
+        # Kiểm tra đã lấy đủ dữ liệu chưa
         if len(samples) >= 2:
-            start_oi = samples
-            end_oi = samples[-1]
-            start_vol = vol_samples
-            end_vol = vol_samples[-1]
+            start_oi = samples[0]   # Mẫu đầu tiên của phút
+            end_oi = samples[-1]    # Mẫu cuối cùng của phút
+            start_vol = vol_samples[0] if len(vol_samples) >= 1 else None
+            end_vol = vol_samples[-1] if len(vol_samples) >= 2 else None
 
             if start_oi > 0:
                 change_pct = ((end_oi - start_oi) / start_oi) * 100
