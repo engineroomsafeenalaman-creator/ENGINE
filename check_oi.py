@@ -3,16 +3,19 @@ import time
 import requests
 from datetime import datetime, timezone
 
-# Dán trực tiếp link Discord Webhook của bạn vào đây:
+# 1. DÁN LINK DISCORD WEBHOOK CỦA BẠN VÀO DÒNG DƯỚI ĐÂY:
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
 
 COIN_FILE = "coin.txt"
 DEFAULT_COIN = "BTCUSDT"
 MIN_OI_CHANGE = 0.001
 
-# Các cụm máy chủ dự phòng của Binance Futures
 BINANCE_ENDPOINTS = [
-    "https://www.binance.com/en/futures","https://www.binance.com/en/futures/BTCUSDT"
+    "https://binance.com",
+    "https://binance.com",
+    "https://binance.com",
+    "https://binance.com",
+    "https://binance.com"
 ]
 
 def get_coin():
@@ -36,15 +39,13 @@ def get_binance_oi(symbol):
                 data = res.json()
                 if "openInterest" in data:
                     return float(data["openInterest"]), base_url
-            else:
-                print(f"Cảnh báo {base_url} trả về HTTP {res.status_code}")
         except Exception as e:
             print(f"Lỗi kết nối {base_url}: {e}")
     return None, None
 
 def send_discord(symbol, start_oi, end_oi, change_pct, source):
     if not DISCORD_WEBHOOK_URL or "YOUR_WEBHOOK_ID" in DISCORD_WEBHOOK_URL:
-        print("❌ Chưa cấu hình link Discord Webhook!")
+        print("❌ LỖI: Bạn chưa dán link Discord Webhook vào dòng số 7!")
         return False
 
     base_asset = symbol.replace("USDT", "")
@@ -72,7 +73,7 @@ def send_discord(symbol, start_oi, end_oi, change_pct, source):
         print("✅ Đã gửi thông báo Discord thành công!")
         return True
     except Exception as e:
-        print(f"Lỗi gửi Discord: {e}")
+        print(f"❌ Lỗi gửi Discord: {e}")
         return False
 
 def main():
@@ -80,12 +81,11 @@ def main():
     last_state = None
     print(f"🚀 Bắt đầu chạy Binance OI Radar cho {symbol}...")
 
-    # Chạy 4 chu kỳ (mỗi chu kỳ 60 giây)
     for cycle in range(1, 5):
         samples = []
         used_source = ""
 
-        for step in range(7):  # Lấy 7 mẫu cách nhau 10 giây
+        for step in range(7):
             oi, src = get_binance_oi(symbol)
             if oi is not None:
                 samples.append(oi)
@@ -97,20 +97,22 @@ def main():
             if step < 6:
                 time.sleep(10)
 
-        if len(samples) >= 2 and samples > 0:
-            start_oi = samples
-            end_oi = samples[-1]
-            change_pct = ((end_oi - start_oi) / start_oi) * 100
-            print(f"📊 [Chốt Phút {cycle}] Đầu: {start_oi:,.3f} | Cuối: {end_oi:,.3f} | Biến động: {change_pct:+.5f}%")
+        # Kiểm tra đã lấy đủ dữ liệu chưa
+        if len(samples) >= 2:
+            start_oi = samples[0]   # Mẫu đầu tiên của phút
+            end_oi = samples[-1]    # Mẫu cuối cùng của phút
 
-            if change_pct > MIN_OI_CHANGE and last_state != "UP":
-                if send_discord(symbol, start_oi, end_oi, change_pct, used_source):
-                    last_state = "UP"
-            elif change_pct < -MIN_OI_CHANGE and last_state != "DOWN":
-                if send_discord(symbol, start_oi, end_oi, change_pct, used_source):
-                    last_state = "DOWN"
+            if start_oi > 0:
+                change_pct = ((end_oi - start_oi) / start_oi) * 100
+                print(f"📊 [Chốt Phút {cycle}] Đầu: {start_oi:,.3f} | Cuối: {end_oi:,.3f} | Biến động: {change_pct:+.5f}%")
 
-        # Xóa sạch mẫu của phút vừa rồi
+                if change_pct > MIN_OI_CHANGE and last_state != "UP":
+                    if send_discord(symbol, start_oi, end_oi, change_pct, used_source):
+                        last_state = "UP"
+                elif change_pct < -MIN_OI_CHANGE and last_state != "DOWN":
+                    if send_discord(symbol, start_oi, end_oi, change_pct, used_source):
+                        last_state = "DOWN"
+
         samples.clear()
 
 if __name__ == "__main__":
