@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 # 1. THÔNG TIN CẤU HÌNH CỦA BẠN:
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1570759626285125753/VTk9ScV2fGroZbp8MZMogLsoK0i8oq62oasdm8I22D8g0QLLXx2icna-M9xuuvZ6fhTl"
-DISCORD_BOT_TOKEN = "MTU3MDc4NDk5NzgxMDUxMTk2Mg.GHNpFa.dDMokpqRM0RKi5HY6rNf5P3agixVDT3nSKBfwc"
+DISCORD_BOT_TOKEN = "MTU3MDc4NDk5NzgxMDUxMTk2Mg.GpgjVZ.xSJQdzbItadr8TzU0ZrCsdeoPEzlUGayaj0G0E"
 DISCORD_CHANNEL_ID = "1570759584119914558"
 
 COIN_FILE = "coin.txt"
