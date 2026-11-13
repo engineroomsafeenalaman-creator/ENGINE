@@ -1,0 +1,24 @@
+name: BINANCE OI Radar
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'  # Tự động chạy mỗi 5 phút
+  workflow_dispatch:       # Cho phép bấm nút chạy thủ công bất cứ lúc nào
+
+jobs:
+  check-oi:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tải mã nguồn
+        uses: actions/checkout@v4
+
+      - name: Cài đặt Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cài thư viện requests
+        run: pip install requests
+
+      - name: Chạy kiểm tra OI
+        run: python -u check_oi.py
