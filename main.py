@@ -1,10 +1,11 @@
 import os
 import gc
+import json
 import time
-import random
 import logging
 import threading
 import requests
+import websocket  # Cài đặt: pip install websocket-client
 
 from datetime import datetime, timezone
 from flask import Flask, jsonify
@@ -14,40 +15,28 @@ from flask import Flask, jsonify
 # ==========================================
 
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+TARGET_SYMBOL = "btcusdt"  # WebSocket yêu cầu chữ thường
 
-# Danh sách các cụm máy chủ dự phòng của Binance Futures
-BINANCE_ENDPOINTS = [
-    "https://binance.com",
-    "https://binance.com",
-    "https://binance.com",
-    "https://binance.com",
-    "https://binance.com"
+# Các cụm máy chủ WebSocket dự phòng của Binance Futures
+WS_ENDPOINTS = [
+    f"wss://://binance.com{TARGET_SYMBOL}@openInterest",
+    f"wss://://binance.com{TARGET_SYMBOL}@openInterest",
+    f"wss://://binance.com{TARGET_SYMBOL}@openInterest"
 ]
 
-# Proxy dự phòng (nếu có), phân cách bởi dấu phẩy
-RAW_PROXIES = os.getenv("PROXY_LIST", "")
-PROXY_POOL = [p.strip() for p in RAW_PROXIES.split(",") if p.strip()]
-
-TARGET_SYMBOL = "BTCUSDT"
 CHECK_INTERVAL = 10         # Lấy mẫu mỗi 10 giây
 LOOKBACK_SECONDS = 60       # Chu kỳ 1 phút (60 giây)
 MAX_SAMPLES = (LOOKBACK_SECONDS // CHECK_INTERVAL) + 1  # 7 mẫu (0s -> 60s)
 MIN_OI_CHANGE = 0.001       # Ngưỡng biến động ±0.001%
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0",
-    "Accept": "application/json"
-}
-
-session = requests.Session()
-endpoint_index = 0
+latest_oi_data = None
+ws_index = 0
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
-
-log = logging.getLogger("BINANCE_BTC_OI_BLOCK_1M")
+log = logging.getLogger("BINANCE_WS_OI")
 
 app = Flask(__name__)
 
@@ -59,9 +48,8 @@ app = Flask(__name__)
 def home():
     return jsonify({
         "status": "online",
-        "symbol": TARGET_SYMBOL,
-        "interval_seconds": CHECK_INTERVAL,
-        "cycle_seconds": LOOKBACK_SECONDS
+        "mode": "WebSocket (Zero Rate Limit)",
+        "symbol": TARGET_SYMBOL.upper()
     })
 
 @app.route("/health")
@@ -69,58 +57,48 @@ def health():
     return jsonify({"status": "healthy"})
 
 # ==========================================
-# BINANCE API REQUEST (FAILOVER + ANTI-BAN)
+# WEBSOCKET LISTENER (NHẬN DỮ LIỆU REALTIME)
 # ==========================================
 
-def get_binance_btc_oi():
-    global endpoint_index
-
-    for _ in range(len(BINANCE_ENDPOINTS)):
-        base_url = BINANCE_ENDPOINTS[endpoint_index % len(BINANCE_ENDPOINTS)]
-        endpoint_index += 1
-
-        proxies = None
-        if PROXY_POOL:
-            chosen_proxy = random.choice(PROXY_POOL)
-            proxies = {"http": chosen_proxy, "https": chosen_proxy}
-
-        try:
-            response = session.get(
-                f"{base_url}/fapi/v1/openInterest",
-                params={"symbol": TARGET_SYMBOL},
-                headers=HEADERS,
-                proxies=proxies,
-                timeout=5
-            )
-
-            used_weight = int(response.headers.get("X-MBX-USED-WEIGHT-1M", 0))
-            if used_weight > 2000:
-                log.warning("Weight cao (%d/2400)! Tạm nghỉ 30s...", used_weight)
-                time.sleep(30)
-
-            if response.status_code in (403, 418, 429):
-                retry_after = int(response.headers.get("Retry-After", 60))
-                log.warning("Bị giới hạn tại %s (HTTP %d). Chờ %ds...", base_url, response.status_code, retry_after)
-                if not PROXY_POOL:
-                    time.sleep(retry_after)
-                continue
-
-            response.raise_for_status()
-            data = response.json()
-
-            return {
-                "symbol": data["symbol"],
-                "oi": float(data["openInterest"]),
-                "timestamp": time.time(),
-                "source": base_url
+def on_message(ws, message):
+    global latest_oi_data
+    try:
+        data = json.loads(message)
+        # Dữ liệu trả về từ stream @openInterest có trường "o" là Open Interest
+        if "o" in data:
+            latest_oi_data = {
+                "symbol": data.get("s", TARGET_SYMBOL.upper()),
+                "oi": float(data["o"]),
+                "timestamp": time.time()
             }
+    except Exception as e:
+        log.error("Lỗi đọc dữ liệu WebSocket: %s", e)
 
-        except Exception as e:
-            log.warning("Lỗi kết nối %s: %s. Chuyển nguồn dự phòng...", base_url, e)
-            continue
+def on_error(ws, error):
+    log.warning("Lỗi WebSocket: %s", error)
 
-    log.error("Tất cả nguồn dự phòng Binance đều thất bại trong chu kỳ này.")
-    return None
+def on_close(ws, close_status_code, close_msg):
+    log.warning("Mất kết nối WebSocket. Đang tự động kết nối lại sau 3s...")
+
+def on_open(ws):
+    log.info("✅ Đã kết nối thành công tới Binance WebSocket!")
+
+def start_websocket():
+    global ws_index
+    while True:
+        url = WS_ENDPOINTS[ws_index % len(WS_ENDPOINTS)]
+        ws_index += 1
+        log.info("Đang kết nối tới %s ...", url)
+        
+        ws = websocket.WebSocketApp(
+            url,
+            on_open=on_open,
+            on_message=on_message,
+            on_error=on_error,
+            on_close=on_close
+        )
+        ws.run_forever(ping_interval=20, ping_timeout=10)
+        time.sleep(3)
 
 # ==========================================
 # DISCORD NOTIFICATION
@@ -139,7 +117,7 @@ def send_discord(current, start_of_minute, change_pct):
     payload = {
         "embeds": [
             {
-                "title": f"🚨 BINANCE OI {TARGET_SYMBOL} ({direction})",
+                "title": f"🚨 BINANCE OI {current['symbol']} ({direction})",
                 "color": color,
                 "fields": [
                     {
@@ -164,7 +142,7 @@ def send_discord(current, start_of_minute, change_pct):
                     }
                 ],
                 "footer": {
-                    "text": f"Nguồn: {current['source']} | Chu kỳ 1 phút độc lập"
+                    "text": "Nguồn: Binance WebSocket | Không giới hạn IP"
                 },
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
@@ -172,7 +150,7 @@ def send_discord(current, start_of_minute, change_pct):
     }
 
     try:
-        res = session.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+        res = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
         res.raise_for_status()
         log.info("Đã gửi thông báo Discord | %s | %+.5f%% (%+.3f BTC)", direction, change_pct, diff_btc)
         return True
@@ -181,26 +159,22 @@ def send_discord(current, start_of_minute, change_pct):
         return False
 
 # ==========================================
-# MAIN RADAR LOOP
+# MAIN RADAR LOOP (XỬ LÝ MỖI 10S & CHỐT 1 PHÚT)
 # ==========================================
 
 def radar_loop():
-    log.info(
-        "Khởi chạy theo dõi OI %s mỗi %ss | Chốt & reset bộ nhớ mỗi 1 phút (Ngưỡng: ±%s%%)...",
-        TARGET_SYMBOL, CHECK_INTERVAL, MIN_OI_CHANGE
-    )
-
+    log.info("Bắt đầu chu kỳ lấy mẫu mỗi %ss & chốt sổ mỗi 1 phút...", CHECK_INTERVAL)
     oi_history = []
-    last_alert_state = None  # Lưu trạng thái báo gần nhất: None, "UP", hoặc "DOWN"
+    last_alert_state = None
 
     while True:
         loop_start = time.time()
-        current = get_binance_btc_oi()
 
-        if current:
+        if latest_oi_data:
+            # Copy dữ liệu mới nhất tại thời điểm hiện tại
+            current = dict(latest_oi_data)
             oi_history.append(current)
 
-            # Khi đã thu thập đủ 7 mẫu (trọn vẹn 1 phút: 0s -> 60s)
             if len(oi_history) >= MAX_SAMPLES:
                 start_of_minute = oi_history
 
@@ -215,28 +189,22 @@ def radar_loop():
                         last_alert_state
                     )
 
-                    # 1. Tăng vượt +0.001% (và chưa ở trạng thái báo tăng)
                     if change_pct > MIN_OI_CHANGE and last_alert_state != "UP":
                         if send_discord(current, start_of_minute, change_pct):
                             last_alert_state = "UP"
 
-                    # 2. Giảm vượt -0.001% (và chưa ở trạng thái báo giảm)
                     elif change_pct < -MIN_OI_CHANGE and last_alert_state != "DOWN":
                         if send_discord(current, start_of_minute, change_pct):
                             last_alert_state = "DOWN"
 
-                # Luôn xóa sạch bộ nhớ đệm và giải phóng RAM sau mỗi phút (dù có báo hay không)
+                # Xóa sạch bộ nhớ đệm cuối mỗi phút
                 oi_history.clear()
                 gc.collect()
-                log.info("🧹 Đã xóa sạch bộ nhớ đệm cuối phút! Bắt đầu thu thập chu kỳ 1 phút mới...")
-
+                log.info("🧹 Đã xóa sạch bộ nhớ đệm cuối phút!")
             else:
-                log.info(
-                    "Đang lấy mẫu trong phút (%d/%d)... OI: %.3f BTC",
-                    len(oi_history),
-                    MAX_SAMPLES,
-                    current["oi"]
-                )
+                log.info("Đang lấy mẫu (%d/%d)... OI: %.3f BTC", len(oi_history), MAX_SAMPLES, current["oi"])
+        else:
+            log.info("Đang đợi dữ liệu đầu tiên từ Binance WebSocket...")
 
         elapsed = time.time() - loop_start
         time.sleep(max(0, CHECK_INTERVAL - elapsed))
@@ -246,8 +214,13 @@ def radar_loop():
 # ==========================================
 
 if __name__ == "__main__":
-    worker = threading.Thread(target=radar_loop, daemon=True)
-    worker.start()
+    # Luồng 1: Chạy WebSocket nhận dữ liệu liên tục
+    ws_thread = threading.Thread(target=start_websocket, daemon=True)
+    ws_thread.start()
 
-    port = int(os.environ.get("PORT", 5000))
+    # Luồng 2: Chạy vòng lặp kiểm tra mỗi 10s
+    radar_thread = threading.Thread(target=radar_loop, daemon=True)
+    radar_thread.start()
+
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
