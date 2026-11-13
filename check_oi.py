@@ -8,7 +8,7 @@ DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1570759626285125753/VTk9
 
 COIN_FILE = "coin.txt"
 DEFAULT_COIN = "BTCUSDT"
-MIN_OI_CHANGE = 0.5
+MIN_OI_CHANGE = 0.01
 
 BINANCE_ENDPOINTS = [
     "https://www.binance.com/en/futures/BTCUSDT"
