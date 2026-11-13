@@ -1,13 +1,22 @@
-name: Binance OI Radar
+name: Binance OI Radar 24-7
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '0 * * * *'   # Dự phòng: Tự động kiểm tra mỗi giờ nếu bị đứt chuỗi
   workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write           # Cấp quyền để phiên cũ tự bật phiên mới
 
 jobs:
   check-oi:
     runs-on: ubuntu-latest
+    # Tránh 2 phiên chạy chồng chéo cùng lúc
+    concurrency:
+      group: oi-radar-group
+      cancel-in-progress: false
+
     steps:
       - name: Tải mã nguồn
         uses: actions/checkout@v4
@@ -20,5 +29,18 @@ jobs:
       - name: Cài thư viện requests
         run: pip install requests
 
-      - name: Chạy kiểm tra OI
+      - name: Chạy kiểm tra OI liên tục 55 phút
         run: python -u check_oi.py
+
+      - name: Lưu trạng thái
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add state.txt
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update state" && git push)
+
+      - name: Tự động kích hoạt phiên nối tiếp ngay lập tức
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run oi_radar.yml
