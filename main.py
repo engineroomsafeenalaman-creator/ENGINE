@@ -14,10 +14,12 @@ from flask import Flask, jsonify
 # CONFIG
 # ==========================================
 
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+# DÁN TRỰC TIẾP LINK DISCORD WEBHOOK CỦA BẠN VÀO DƯỚI ĐÂY:
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1570320464172285962/PT-xnCZ00dB024QmxRcWVxcoVBOA8FgqG-X74ZOdAz9imXFaycr69FFmZxrqHqNfz3jN"
+
 TARGET_SYMBOL = "btcusdt"  # WebSocket yêu cầu chữ thường
 
-# Các cụm máy chủ WebSocket dự phòng của Binance Futures
+# Các cụm máy chủ WebSocket dự phòng chuẩn của Binance Futures
 WS_ENDPOINTS = [
     f"wss://://binance.com{TARGET_SYMBOL}@openInterest",
     f"wss://://binance.com{TARGET_SYMBOL}@openInterest",
@@ -64,7 +66,6 @@ def on_message(ws, message):
     global latest_oi_data
     try:
         data = json.loads(message)
-        # Dữ liệu trả về từ stream @openInterest có trường "o" là Open Interest
         if "o" in data:
             latest_oi_data = {
                 "symbol": data.get("s", TARGET_SYMBOL.upper()),
@@ -105,8 +106,8 @@ def start_websocket():
 # ==========================================
 
 def send_discord(current, start_of_minute, change_pct):
-    if not DISCORD_WEBHOOK_URL:
-        log.error("Thiếu biến môi trường DISCORD_WEBHOOK_URL!")
+    if not DISCORD_WEBHOOK_URL or "YOUR_WEBHOOK_ID" in DISCORD_WEBHOOK_URL:
+        log.error("Bạn chưa dán link Discord Webhook vào biến DISCORD_WEBHOOK_URL!")
         return False
 
     diff_btc = current["oi"] - start_of_minute["oi"]
@@ -171,12 +172,11 @@ def radar_loop():
         loop_start = time.time()
 
         if latest_oi_data:
-            # Copy dữ liệu mới nhất tại thời điểm hiện tại
             current = dict(latest_oi_data)
             oi_history.append(current)
 
             if len(oi_history) >= MAX_SAMPLES:
-                start_of_minute = oi_history
+                start_of_minute = oi_history[0]
 
                 if start_of_minute["oi"] > 0:
                     change_pct = ((current["oi"] - start_of_minute["oi"]) / start_of_minute["oi"]) * 100
@@ -214,11 +214,9 @@ def radar_loop():
 # ==========================================
 
 if __name__ == "__main__":
-    # Luồng 1: Chạy WebSocket nhận dữ liệu liên tục
     ws_thread = threading.Thread(target=start_websocket, daemon=True)
     ws_thread.start()
 
-    # Luồng 2: Chạy vòng lặp kiểm tra mỗi 10s
     radar_thread = threading.Thread(target=radar_loop, daemon=True)
     radar_thread.start()
 
