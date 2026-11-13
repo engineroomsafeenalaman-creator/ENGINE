@@ -4,7 +4,7 @@ import requests
 from datetime import datetime, timezone
 
 # 1. THÔNG TIN CẤU HÌNH CỦA BẠN:
-DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1570759626285125753/VTk9ScV2fGroZbp8MZMogLsoK0i8oq62oasdm8I22D8g0QLLXx2icna-M9xuuvZ6fhTl"
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1570806806937084124/pN4O2WNJdGsijYSHNAKGD8naXHyGAooTfYA7eid6B5ZNjGa4pBv7-HeOHEoYJgus8fGW"
 DISCORD_BOT_TOKEN = os.environ.get("EK", "")
 DISCORD_CHANNEL_ID = "1570759584119914558"
 
