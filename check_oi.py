@@ -11,11 +11,7 @@ DEFAULT_COIN = "BTCUSDT"
 MIN_OI_CHANGE = 0.01
 
 BINANCE_ENDPOINTS = [
-    "https://binance.com",
-    "https://binance.com",
-    "https://binance.com",
-    "https://binance.com",
-    "https://binance.com"
+    "https://www.binance.com/en/futures/OUSDT"
 ]
 
 def get_coin():
