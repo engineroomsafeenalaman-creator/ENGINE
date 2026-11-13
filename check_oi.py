@@ -10,7 +10,7 @@ DISCORD_CHANNEL_ID = "1570759584119914558"
 
 COIN_FILE = "coin.txt"
 DEFAULT_COIN = "BTCUSDT"
-MIN_OI_CHANGE = 0.001
+MIN_OI_CHANGE = 0.5
 
 BINANCE_ENDPOINTS = [
     "https://binance.com"
@@ -21,7 +21,8 @@ def check_discord_coin_command():
     if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID or "DÁN_" in DISCORD_BOT_TOKEN:
         return
 
-    url = f"https://discord.com{DISCORD_CHANNEL_ID}/messages?limit=5"
+    api_path = "/api/v10/channels/"
+    url = f"https://discord.com{api_path}{DISCORD_CHANNEL_ID}/messages?limit=5"
     headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
 
     try:
@@ -33,7 +34,7 @@ def check_discord_coin_command():
                 if content.lower().startswith("!coin "):
                     parts = content.split(" ", 1)
                     if len(parts) > 1:
-                        new_coin = parts[1].strip().upper()
+                        new_coin = parts.strip().upper()
                         if not new_coin.endswith("USDT"):
                             new_coin += "USDT"
 
@@ -175,9 +176,9 @@ def main():
                 time.sleep(10)
 
         if len(samples) >= 2:
-            start_oi = samples[0]
+            start_oi = samples
             end_oi = samples[-1]
-            start_vol = vol_samples[0] if len(vol_samples) >= 1 else None
+            start_vol = vol_samples if len(vol_samples) >= 1 else None
             end_vol = vol_samples[-1] if len(vol_samples) >= 2 else None
 
             if start_oi > 0:
