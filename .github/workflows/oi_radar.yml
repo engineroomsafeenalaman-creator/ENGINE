@@ -30,6 +30,8 @@ jobs:
         run: pip install requests
 
       - name: Chạy kiểm tra OI liên tục 55 phút
+        env:
+          EK: ${{ secrets.EK }}
         run: python -u check_oi.py
 
       - name: Lưu trạng thái
