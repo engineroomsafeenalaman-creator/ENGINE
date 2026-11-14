@@ -34,7 +34,7 @@ def check_discord_coin_command():
                 if content.lower().startswith("!coin "):
                     parts = content.split(" ", 1)
                     if len(parts) > 1:
-                        new_coin = parts.strip().upper()
+                        new_coin = parts[1].strip().upper()
                         if not new_coin.endswith("USDT"):
                             new_coin += "USDT"
 
@@ -180,11 +180,11 @@ def main():
                 time.sleep(10)
 
         if len(samples) >= 2:
-            start_oi = samples
+            start_oi = samples[0]
             end_oi = samples[-1]
-            start_vol = vol_samples if len(vol_samples) >= 1 else None
+            start_vol = vol_samples[0] if len(vol_samples) >= 1 else None
             end_vol = vol_samples[-1] if len(vol_samples) >= 2 else None
-            start_price = price_samples if len(price_samples) >= 1 else None
+            start_price = price_samples[0] if len(price_samples) >= 1 else None
             end_price = price_samples[-1] if len(price_samples) >= 2 else None
 
             if start_oi > 0:
